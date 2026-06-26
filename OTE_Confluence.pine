@@ -15,7 +15,7 @@
 //    swingLen 4, HTF bias 60m. See the swingLen tooltip for the per-TF map.
 //    On LTF, turn ON "Require active killzone" to skip dead, choppy sessions.
 // =============================================================================
-indicator("OTE — Optimal Trade Entry (Confluence) v2", "OTE v2", overlay = true,
+indicator("OTE — Optimal Trade Entry (Confluence) v3", "OTE v3", overlay = true,
      max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
 // ---------------------------------------------------------------------------
@@ -77,6 +77,8 @@ colZone    = input.color(color.new(color.teal, 80), "Bull zone fill", group = gr
 colZoneB   = input.color(color.new(color.red, 80),  "Bear zone fill", group = grpV)
 extendBars = input.int(30, "Extend zone forward (bars)", minval = 5, group = grpV)
 showLabels = input.bool(true, "Show info labels", group = grpV)
+showLeg    = input.bool(true, "Show anchor leg (origin → extreme)", group = grpV,
+     tooltip = "Draws the impulse leg the fib is measured from, marking the swing low/high anchors so you can verify it's pinned to the right points.")
 
 // ---------------------------------------------------------------------------
 //  KILLZONE STATE
@@ -211,6 +213,7 @@ type OTE
     int   score
     bool  triggered
     box   zone
+    line  legLine
     line  lSweet
     line  lEq
     line  lStop
@@ -238,6 +241,7 @@ f_tag(array<label> arr, int x, float price, string txt, color tcol) =>
 f_clear(OTE o) =>
     if not na(o)
         box.delete(o.zone)
+        line.delete(o.legLine)
         line.delete(o.lSweet)
         line.delete(o.lEq)
         line.delete(o.lStop)
@@ -260,6 +264,19 @@ f_draw(OTE o) =>
     rEdge = o.endBar + extendBars
     o.zone   := box.new(o.endBar, zTop, rEdge, zBot, border_color = col,
          bgcolor = fill, border_width = 1)
+    o.tags := array.new<label>()
+    // ---- anchor leg: the impulse the fib is measured from (origin 1.0 -> extreme 0.0) ----
+    if showLeg
+        o.legLine := line.new(o.startBar, o.legStart, o.endBar, o.legEnd,
+             color = color.new(col, 0), width = 2)
+        startStyle = o.isBull ? label.style_label_up   : label.style_label_down
+        endStyle   = o.isBull ? label.style_label_down : label.style_label_up
+        array.push(o.tags, label.new(o.startBar, o.legStart,
+             "1.0 origin\n(" + (o.isBull ? "swing low" : "swing high") + ")",
+             style = startStyle, color = color.new(col, 10), textcolor = color.white, size = size.small))
+        array.push(o.tags, label.new(o.endBar, o.legEnd,
+             "0.0 anchor\n(" + (o.isBull ? "swing high" : "swing low") + ")",
+             style = endStyle, color = color.new(col, 10), textcolor = color.white, size = size.small))
     o.lSweet := line.new(o.endBar, f_level(o, oteSweet), rEdge, f_level(o, oteSweet),
          color = col, width = 2, style = line.style_solid)
     if showEq
@@ -276,7 +293,6 @@ f_draw(OTE o) =>
         o.lT3 := line.new(o.endBar, f_level(o, -1.0),  rEdge, f_level(o, -1.0),
              color = color.new(col, 40), style = line.style_dotted)
     // ---- name every level with a tag at the right edge ----
-    o.tags := array.new<label>()
     dirTxt = o.isBull ? "LONG" : "SHORT"
     green  = color.new(color.green, 0)
     f_tag(o.tags, rEdge, f_level(o, oteHi),    "OTE " + str.tostring(oteHi)  + " (zone top)", col)
