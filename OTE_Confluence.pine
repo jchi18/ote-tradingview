@@ -15,7 +15,7 @@
 //    swingLen 4, HTF bias 60m. See the swingLen tooltip for the per-TF map.
 //    On LTF, turn ON "Require active killzone" to skip dead, choppy sessions.
 // =============================================================================
-indicator("OTE — Optimal Trade Entry (Confluence)", "OTE", overlay = true,
+indicator("OTE — Optimal Trade Entry (Confluence) v2", "OTE v2", overlay = true,
      max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
 // ---------------------------------------------------------------------------
@@ -213,16 +213,24 @@ type OTE
     box   zone
     line  lSweet
     line  lEq
+    line  lStop
     line  lT1
     line  lT2
     line  lT3
     label lab
+    array<label> tags
 
 var OTE bull = na
 var OTE bear = na
 
 // fib level helper: level(r) = legEnd - (legEnd-legStart)*r
 f_level(o, r) => o.legEnd - (o.legEnd - o.legStart) * r
+
+// place a small text tag at the right edge of a level line, naming it
+f_tag(array<label> arr, int x, float price, string txt, color tcol) =>
+    array.push(arr, label.new(x, price, txt, xloc = xloc.bar_index,
+         style = label.style_label_left, color = color.new(color.gray, 100),
+         textcolor = tcol, size = size.small))
 
 // ---------------------------------------------------------------------------
 //  Cleanup helper
@@ -232,10 +240,14 @@ f_clear(OTE o) =>
         box.delete(o.zone)
         line.delete(o.lSweet)
         line.delete(o.lEq)
+        line.delete(o.lStop)
         line.delete(o.lT1)
         line.delete(o.lT2)
         line.delete(o.lT3)
         label.delete(o.lab)
+        if not na(o.tags)
+            for l in o.tags
+                label.delete(l)
 
 // ---------------------------------------------------------------------------
 //  Build & draw a setup
@@ -253,6 +265,9 @@ f_draw(OTE o) =>
     if showEq
         o.lEq := line.new(o.endBar, f_level(o, 0.5), rEdge, f_level(o, 0.5),
              color = color.new(color.gray, 30), style = line.style_dashed)
+    // stop reference at the leg origin (fib 1.0) — invalidation level
+    o.lStop := line.new(o.endBar, f_level(o, 1.0), rEdge, f_level(o, 1.0),
+         color = color.new(color.red, 20), style = line.style_dashed)
     if showTargets
         o.lT1 := line.new(o.endBar, f_level(o, -0.27), rEdge, f_level(o, -0.27),
              color = color.new(col, 40), style = line.style_dotted)
@@ -260,6 +275,20 @@ f_draw(OTE o) =>
              color = color.new(col, 40), style = line.style_dotted)
         o.lT3 := line.new(o.endBar, f_level(o, -1.0),  rEdge, f_level(o, -1.0),
              color = color.new(col, 40), style = line.style_dotted)
+    // ---- name every level with a tag at the right edge ----
+    o.tags := array.new<label>()
+    dirTxt = o.isBull ? "LONG" : "SHORT"
+    green  = color.new(color.green, 0)
+    f_tag(o.tags, rEdge, f_level(o, oteHi),    "OTE " + str.tostring(oteHi)  + " (zone top)", col)
+    f_tag(o.tags, rEdge, f_level(o, oteSweet), "ENTRY " + str.tostring(oteSweet) + " — " + dirTxt + " sweet spot", col)
+    f_tag(o.tags, rEdge, f_level(o, oteLo),    "OTE " + str.tostring(oteLo)  + " (zone bottom)", col)
+    f_tag(o.tags, rEdge, f_level(o, 1.0),      "STOP 1.0 (leg origin)", color.new(color.red, 0))
+    if showEq
+        f_tag(o.tags, rEdge, f_level(o, 0.5),  "EQ 0.5 (premium/discount)", color.new(color.gray, 0))
+    if showTargets
+        f_tag(o.tags, rEdge, f_level(o, -0.27), "TP1 -0.27", green)
+        f_tag(o.tags, rEdge, f_level(o, -0.62), "TP2 -0.62", green)
+        f_tag(o.tags, rEdge, f_level(o, -1.0),  "TP3 -1.0", green)
     if showLabels
         tag = (o.isBull ? "▲ OTE LONG" : "▼ OTE SHORT") + "  score " + str.tostring(o.score) + "/9"
         tag := tag + "\n" + (o.sweep ? "✓" : "✗") + " sweep   " + (o.mss ? "✓" : "✗") + " MSS   " + (o.disp ? "✓" : "✗") + " displ"
