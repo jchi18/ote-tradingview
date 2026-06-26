@@ -15,12 +15,12 @@
 // MNQ) is auto-handled via syminfo.pointvalue, so risk-% sizing is correct on any
 // symbol. Capital & commission are inputs below. Stocks/forex: switch
 // commission_type to strategy.commission.percent and set commission ~0.02.
+// NOTE: initial_capital and commission_value MUST be constants here (Pine rule).
+// Edit these two numbers directly: capital ($) and $ commission per contract.
 strategy("OTE Strategy (Confluence)", "OTE-S", overlay = true,
-     initial_capital = input.int(5000, "Initial capital $", minval = 100, group = "Trade / Execution"),
-     default_qty_type = strategy.fixed, default_qty_value = 1,
+     initial_capital = 5000, default_qty_type = strategy.fixed, default_qty_value = 1,
      pyramiding = 0, calc_on_order_fills = false, process_orders_on_close = false,
-     commission_type = strategy.commission.cash_per_contract,
-     commission_value = input.float(1.0, "Commission $/contract", minval = 0, step = 0.1, group = "Trade / Execution"),
+     commission_type = strategy.commission.cash_per_contract, commission_value = 1.0,
      slippage = 1,
      max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
@@ -227,9 +227,7 @@ if allowLong and not na(ph) and not na(lastPL) and lastPHbar > lastPLbar and las
     disp = (lastPH - lastPL) >= dispMult * atr
     smt = not na(prevPL) and not na(prevCorrPL) and lastPL < prevPL and lastCorrPL > prevCorrPL
     score = f_score(sweep, mss, fvg, rb, ob, disp, kzActive)
-    gates = (not strictAnchor or (sweep and mss)) and (not reqDisp or disp) and (not reqOB or ob) and
-             (not reqMSS or mss) and (not reqSweep or sweep) and (not reqFVG or fvg) and
-             (not reqRB or rb) and (not useSMT or smt) and (not reqKZ or kzActive) and (not useHTF or htfBull) and score >= minScore
+    gates = (not strictAnchor or (sweep and mss)) and (not reqDisp or disp) and (not reqOB or ob) and (not reqMSS or mss) and (not reqSweep or sweep) and (not reqFVG or fvg) and (not reqRB or rb) and (not useSMT or smt) and (not reqKZ or kzActive) and (not useHTF or htfBull) and score >= minScore
     if gates
         Lentry := f_level(lastPH, lastPL, entryFib)
         Lsl    := f_level(lastPH, lastPL, slFib) - slBufATR * atr
@@ -256,9 +254,7 @@ if allowShort and not na(pl) and not na(lastPH) and lastPLbar > lastPHbar and la
     disp = (lastPH - lastPL) >= dispMult * atr
     smt = not na(prevPH) and not na(prevCorrPH) and lastPH > prevPH and lastCorrPH < prevCorrPH
     score = f_score(sweep, mss, fvg, rb, ob, disp, kzActive)
-    gates = (not strictAnchor or (sweep and mss)) and (not reqDisp or disp) and (not reqOB or ob) and
-             (not reqMSS or mss) and (not reqSweep or sweep) and (not reqFVG or fvg) and
-             (not reqRB or rb) and (not useSMT or smt) and (not reqKZ or kzActive) and (not useHTF or htfBear) and score >= minScore
+    gates = (not strictAnchor or (sweep and mss)) and (not reqDisp or disp) and (not reqOB or ob) and (not reqMSS or mss) and (not reqSweep or sweep) and (not reqFVG or fvg) and (not reqRB or rb) and (not useSMT or smt) and (not reqKZ or kzActive) and (not useHTF or htfBear) and score >= minScore
     if gates
         Sentry := f_level(lastPL, lastPH, entryFib)
         Ssl    := f_level(lastPL, lastPH, slFib) + slBufATR * atr
