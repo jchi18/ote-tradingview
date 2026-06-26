@@ -8,7 +8,7 @@
 // guidance box tells you what to do now. You place the resting limit order yourself,
 // then walk away. No market orders. (Volume POC/HVN optional, context only.)
 indicator("VWAP Pullback — A+ Limit Scanner", "VWAP Pull", overlay = true,
-     max_lines_count = 500, max_labels_count = 500, max_bars_back = 1100)
+     max_lines_count = 500, max_labels_count = 500)
 
 // ───────────────────────── inputs ─────────────────────────
 grpS = "Setup"
@@ -40,10 +40,9 @@ showVwap    = input.bool(true,  "VWAP line",                   group = grpV)
 showMarkers = input.bool(false, "Historical setup triangles",  group = grpV, tooltip = "OFF (default) = clean chart, only the current setup is drawn. ON = a triangle on every past setup (cluttered, for study only).")
 
 grpVP = "Volume levels (context only)"
-showVP     = input.bool(false, "Volume POC + high-volume zones", group = grpVP, tooltip = "CONTEXT ONLY — these do NOT change the entry, stop, or target. Approximate volume profile over the lookback: the fuchsia POC is the most-traded price, gray dotted lines are other high-volume nodes. They act as magnets / support-resistance to be aware of around your VWAP limit. Backtested (Round 9): trading these directly has no edge — use them as awareness, not signals.")
-vpLookback = input.int(120, "Lookback (bars)",                  minval = 10, maxval = 1000, group = grpVP)
-vpBins     = input.int(24,  "Price bins (resolution)",          minval = 5,  maxval = 100,  group = grpVP)
-vpZones    = input.int(3,   "High-volume zones (incl. POC)",    minval = 1,  maxval = 6,    group = grpVP)
+showVP   = input.bool(false, "Volume POC + high-volume zones", group = grpVP, tooltip = "CONTEXT ONLY — these do NOT change the entry, stop, or target. A session volume profile: the fuchsia POC is the most-traded price today, gray dotted lines are other high-volume nodes. They act as magnets / support-resistance to be aware of around your VWAP limit. Backtested (Round 9): trading these directly has no edge — use them as awareness, not signals.")
+vpBinPct = input.float(0.05, "Bin size (% of price)",          minval = 0.01, step = 0.01, group = grpVP, tooltip = "Width of each price bucket as a percent of price. Smaller = finer, more levels. 0.05 ≈ $9 on MNQ, ~$15 on BTC.")
+vpZones  = input.int(3,      "High-volume zones (incl. POC)",  minval = 1,    maxval = 6,  group = grpVP)
 
 // ───────────────────────── core calcs ─────────────────────────
 // VWAP anchored to the RTH session (what the strategy was backtested on), computed
@@ -200,51 +199,55 @@ if showPanel and barstate.islast
     f_row(panel, 6, "Size (ct)", sActive ? str.tostring(q) : "—", color.white)
 
 // ── Volume levels (CONTEXT ONLY — does not affect entry/stop/target) ──
-// Pine has no native volume-by-price, so we approximate it: split the recent price
-// range into bins, add each bar's volume to the bin its typical price falls in, then
-// mark the busiest bins. Busiest of all = POC (fuchsia). The rest = high-volume nodes
-// (gray dotted). Drawn once on the last bar and refreshed as new bars arrive.
-vpHi = ta.highest(high, vpLookback)
-vpLo = ta.lowest(low,  vpLookback)
+// Session volume-by-price, built FORWARD bar by bar (no historical look-back, so it
+// can't trigger buffer / referencing-length runtime errors). Each in-session bar adds
+// its volume to the price bucket its hlc3 falls in, accumulated from the session open
+// and reset each session. On the last bar we mark the busiest buckets: the very
+// busiest = POC (fuchsia), the rest = high-volume nodes (gray dotted).
+var map<int, float> vpMap  = map.new<int, float>()
+var float           vpBinW = na
+if newVwap or na(vpBinW)
+    map.clear(vpMap)
+    vpBinW := close * vpBinPct / 100.0
+if inVwapSess and vpBinW > 0
+    int   keyB = int(math.floor(hlc3 / vpBinW))
+    float prevV = map.contains(vpMap, keyB) ? map.get(vpMap, keyB) : 0.0
+    map.put(vpMap, keyB, prevV + (na(volume) ? 0.0 : volume))
+
 var array<line>  vpLines  = array.new<line>()
 var array<label> vpLabels = array.new<label>()
 
-if showVP and barstate.islast and vpHi > vpLo
-    for i = 0 to array.size(vpLines) - 1
-        line.delete(array.get(vpLines, i))
-    for i = 0 to array.size(vpLabels) - 1
-        label.delete(array.get(vpLabels, i))
+if showVP and barstate.islast and map.size(vpMap) > 0
+    if array.size(vpLines) > 0
+        for i = 0 to array.size(vpLines) - 1
+            line.delete(array.get(vpLines, i))
+    if array.size(vpLabels) > 0
+        for i = 0 to array.size(vpLabels) - 1
+            label.delete(array.get(vpLabels, i))
     array.clear(vpLines)
     array.clear(vpLabels)
-    binSize = (vpHi - vpLo) / vpBins
-    vols = array.new<float>(vpBins, 0.0)
-    for k = 0 to vpLookback - 1
-        if not na(high[k]) and not na(low[k])
-            tp   = (high[k] + low[k] + close[k]) / 3.0
-            bvol = na(volume[k]) ? 0.0 : volume[k]
-            bi   = int(math.floor((tp - vpLo) / binSize))
-            bi   := math.max(0, math.min(vpBins - 1, bi))
-            array.set(vols, bi, array.get(vols, bi) + bvol)
-    leftX = bar_index - vpLookback
+    keysArr = map.keys(vpMap)     // bucket indices, insertion order
+    volsArr = map.values(vpMap)   // matching volumes, same order
+    leftX = math.max(0, bar_index - 80)
     drawn = 0
-    while drawn < vpZones
+    while drawn < vpZones and drawn < array.size(keysArr)
         bestIdx = -1
         bestVol = 0.0
-        for b = 0 to vpBins - 1
-            cur = array.get(vols, b)
+        for j = 0 to array.size(volsArr) - 1
+            cur = array.get(volsArr, j)
             if cur > bestVol
                 bestVol := cur
-                bestIdx := b
+                bestIdx := j
         if bestIdx < 0
             break
-        price = vpLo + (bestIdx + 0.5) * binSize
+        price = (array.get(keysArr, bestIdx) + 0.5) * vpBinW
         isPoc = drawn == 0
         col   = isPoc ? color.fuchsia : color.gray
         ln = line.new(leftX, price, bar_index, price, color = color.new(col, isPoc ? 0 : 30), width = 1, style = isPoc ? line.style_solid : line.style_dotted, extend = extend.right)
         lb = label.new(bar_index, price, (isPoc ? "POC " : "HVN ") + str.tostring(price, format.mintick), style = label.style_label_left, color = color.new(col, isPoc ? 0 : 20), textcolor = color.white, size = size.tiny)
         array.push(vpLines, ln)
         array.push(vpLabels, lb)
-        array.set(vols, bestIdx, -1.0)
+        array.set(volsArr, bestIdx, -1.0)
         drawn += 1
 
 // ── Plain-English guidance box ── one sentence telling you what to do right now and
