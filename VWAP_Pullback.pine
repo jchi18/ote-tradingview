@@ -1,11 +1,12 @@
 //@version=6
 // VWAP Pullback — A+ Limit Scanner
-// Backtest-confirmed primary strategy (BACKTEST_RESULTS.md Rounds 7–8):
+// Backtest-confirmed primary strategy (BACKTEST_RESULTS.md Rounds 7–10):
 //   dual-EMA HTF trend filter -> in an uptrend rest a BUY-LIMIT at session VWAP,
-//   in a downtrend a SELL-LIMIT at VWAP. Stop 0.5xATR beyond, target RR 1.5–2.0,
-//   NY-AM window, ~1 trade/session. PF ~2.6 bull / ~2.8 bear on QQQ->NQ proxy.
-// This is an INDICATOR: it marks the level, stop, target and position size.
-// You place the resting limit order yourself, then walk away. No market orders.
+//   in a downtrend a SELL-LIMIT at VWAP. Stop 0.5xATR beyond, target RR 1.5–2.0.
+//   Edge holds all RTH (PF ~2.5–3.0 on QQQ->NQ proxy); 11:00–13:00 lunch is weakest.
+// This is an INDICATOR: it marks the entry/stop/target/size and a plain-English
+// guidance box tells you what to do now. You place the resting limit order yourself,
+// then walk away. No market orders. (Volume POC/HVN optional, context only.)
 indicator("VWAP Pullback — A+ Limit Scanner", "VWAP Pull", overlay = true,
      max_lines_count = 500, max_labels_count = 500)
 
@@ -186,7 +187,7 @@ if showPanel and barstate.islast
     sActive = setupActive
     sTxt = not sActive ? "— none —" : isLong ? "LONG ready" : "SHORT ready"
     sCol = not sActive ? color.gray : isLong ? color.teal : color.maroon
-    e = isLong ? entry : entry
+    e = entry
     s = isLong ? longStop : shortStop
     t = isLong ? longTgt : shortTgt
     q = isLong ? longQty : shortQty
