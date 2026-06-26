@@ -8,7 +8,7 @@
 // guidance box tells you what to do now. You place the resting limit order yourself,
 // then walk away. No market orders. (Volume POC/HVN optional, context only.)
 indicator("VWAP Pullback — A+ Limit Scanner", "VWAP Pull", overlay = true,
-     max_lines_count = 500, max_labels_count = 500)
+     max_lines_count = 500, max_labels_count = 500, max_bars_back = 1100)
 
 // ───────────────────────── inputs ─────────────────────────
 grpS = "Setup"
