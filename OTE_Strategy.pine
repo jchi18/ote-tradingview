@@ -49,8 +49,9 @@ rr         = input.float(2.0, "Reward : Risk", minval = 0.1, step = 0.1, group =
 tpFib      = input.float(-0.62, "…or fib target (if R:R off)", step = 0.01, group = grpT,
      tooltip = "Projection beyond the leg extreme: -0.27 / -0.62 / -1.0.")
 riskPct    = input.float(1.0, "Risk % of equity per trade", minval = 0.01, step = 0.1, group = grpT)
-wholeContracts = input.bool(false, "Round to whole contracts", group = grpT,
-     tooltip = "ON = realistic futures sizing (whole contracts; needs enough capital or it floors to 0). OFF = fractional, for smoother backtest stats.")
+qtyMode    = input.string("Fixed contracts", "Position sizing", options = ["Fixed contracts", "Risk %"], group = grpT,
+     tooltip = "Fixed = always trade N contracts (guarantees trades; best for micros/small accounts). Risk % sizes from the stop distance but futures round to whole contracts, so a small account often rounds to 0 and takes NO trades.")
+fixedQty   = input.int(1, "Fixed contracts (qty)", minval = 1, group = grpT)
 
 grpC  = "Confluence gates"
 strictAnchor = input.bool(true, "Strict ICT anchor (leg must be sweep → MSS)", group = grpC,
@@ -273,10 +274,12 @@ if allowShort and not na(pl) and not na(lastPH) and lastPLbar > lastPHbar and la
 // ---------------------------------------------------------------------------
 f_qty(entryP, slP) =>
     dist = math.abs(entryP - slP)
-    // risk per contract = stop distance (points) × point value (e.g. NQ $20, ES $50)
+    // risk per contract = stop distance (points) × point value (e.g. MNQ $2, NQ $20)
     riskPerUnit = dist * syminfo.pointvalue
     raw = riskPerUnit > 0 ? (strategy.equity * riskPct / 100.0) / riskPerUnit : na
-    q = wholeContracts ? math.floor(raw) : raw
+    // futures need whole contracts; floor to >=1 so a small account still trades
+    riskQty = na(raw) ? 1 : math.max(1, math.floor(raw))
+    q = qtyMode == "Fixed contracts" ? fixedQty : riskQty
     q
 
 if inWindow and Larmed
