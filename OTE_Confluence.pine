@@ -15,7 +15,7 @@
 //    swingLen 4, HTF bias 60m. See the swingLen tooltip for the per-TF map.
 //    On LTF, turn ON "Require active killzone" to skip dead, choppy sessions.
 // =============================================================================
-indicator("OTE — Optimal Trade Entry (Confluence) v3", "OTE v3", overlay = true,
+indicator("OTE — Optimal Trade Entry (Confluence) v4", "OTE v4", overlay = true,
      max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
 // ---------------------------------------------------------------------------
@@ -31,8 +31,9 @@ grpF  = "OTE Fib zone"
 oteHi      = input.float(0.62, "OTE start (shallow)", step = 0.005, group = grpF)
 oteSweet   = input.float(0.705, "OTE sweet spot",     step = 0.005, group = grpF)
 oteLo      = input.float(0.79, "OTE end (deep)",      step = 0.005, group = grpF)
-showEq     = input.bool(true, "Show 0.5 equilibrium", group = grpF)
-showTargets= input.bool(true, "Show TP projections (-0.27/-0.62/-1.0)", group = grpF)
+targetFib  = input.float(-0.62, "Target level (fib)", step = 0.01, group = grpF,
+     tooltip = "Single take-profit projection beyond the leg extreme. -0.27 = near, -1.0 = far.")
+showEq     = input.bool(false, "Show 0.5 equilibrium line", group = grpF)
 
 grpC  = "Confluence gates (require for A+ signal)"
 strictAnchor = input.bool(true, "Strict ICT anchor (leg must be sweep → MSS)", group = grpC,
@@ -75,10 +76,11 @@ colBull    = input.color(color.new(color.teal, 0),  "Bull color", group = grpV)
 colBear    = input.color(color.new(color.red, 0),   "Bear color", group = grpV)
 colZone    = input.color(color.new(color.teal, 80), "Bull zone fill", group = grpV)
 colZoneB   = input.color(color.new(color.red, 80),  "Bear zone fill", group = grpV)
-extendBars = input.int(30, "Extend zone forward (bars)", minval = 5, group = grpV)
-showLabels = input.bool(true, "Show info labels", group = grpV)
-showLeg    = input.bool(true, "Show anchor leg (origin → extreme)", group = grpV,
-     tooltip = "Draws the impulse leg the fib is measured from, marking the swing low/high anchors so you can verify it's pinned to the right points.")
+extendBars = input.int(30, "Extend lines forward (bars)", minval = 5, group = grpV)
+showLabels = input.bool(true, "Show header (direction + score)", group = grpV)
+showPrices = input.bool(true, "Show Entry/Stop/Target prices", group = grpV)
+showLeg    = input.bool(true, "Show anchor leg (verify the fib)", group = grpV,
+     tooltip = "Draws the impulse leg the fib is measured from, marking the swing low/high anchors so you can verify it's pinned to the right points. Turn off for a cleaner chart once you trust it.")
 
 // ---------------------------------------------------------------------------
 //  KILLZONE STATE
@@ -214,14 +216,16 @@ type OTE
     bool  triggered
     box   zone
     line  legLine
-    line  lSweet
-    line  lEq
+    line  lEntry
     line  lStop
-    line  lT1
-    line  lT2
-    line  lT3
+    line  lTarget
+    line  lEq
     label lab
-    array<label> tags
+    label tEntry
+    label tStop
+    label tTarget
+    label aLow
+    label aHigh
 
 var OTE bull = na
 var OTE bear = na
@@ -229,11 +233,10 @@ var OTE bear = na
 // fib level helper: level(r) = legEnd - (legEnd-legStart)*r
 f_level(o, r) => o.legEnd - (o.legEnd - o.legStart) * r
 
-// place a small text tag at the right edge of a level line, naming it
-f_tag(array<label> arr, int x, float price, string txt, color tcol) =>
-    array.push(arr, label.new(x, price, txt, xloc = xloc.bar_index,
-         style = label.style_label_left, color = color.new(color.gray, 100),
-         textcolor = tcol, size = size.small))
+// right-edge price tag for a level
+f_priceTag(int x, float price, string name, color c) =>
+    label.new(x, price, name + " " + str.tostring(price, format.mintick), xloc = xloc.bar_index,
+         style = label.style_label_left, color = c, textcolor = color.white, size = size.small)
 
 // ---------------------------------------------------------------------------
 //  Cleanup helper
@@ -242,79 +245,63 @@ f_clear(OTE o) =>
     if not na(o)
         box.delete(o.zone)
         line.delete(o.legLine)
-        line.delete(o.lSweet)
-        line.delete(o.lEq)
+        line.delete(o.lEntry)
         line.delete(o.lStop)
-        line.delete(o.lT1)
-        line.delete(o.lT2)
-        line.delete(o.lT3)
+        line.delete(o.lTarget)
+        line.delete(o.lEq)
         label.delete(o.lab)
-        if not na(o.tags)
-            for l in o.tags
-                label.delete(l)
+        label.delete(o.tEntry)
+        label.delete(o.tStop)
+        label.delete(o.tTarget)
+        label.delete(o.aLow)
+        label.delete(o.aHigh)
 
 // ---------------------------------------------------------------------------
 //  Build & draw a setup
 // ---------------------------------------------------------------------------
 f_draw(OTE o) =>
-    col   = o.isBull ? colBull : colBear
-    fill  = o.isBull ? colZone : colZoneB
-    zTop  = math.max(f_level(o, oteHi), f_level(o, oteLo))
-    zBot  = math.min(f_level(o, oteHi), f_level(o, oteLo))
-    rEdge = o.endBar + extendBars
-    o.zone   := box.new(o.endBar, zTop, rEdge, zBot, border_color = col,
-         bgcolor = fill, border_width = 1)
-    o.tags := array.new<label>()
-    // ---- anchor leg: the impulse the fib is measured from (origin 1.0 -> extreme 0.0) ----
+    col    = o.isBull ? colBull : colBear
+    fill   = o.isBull ? colZone : colZoneB
+    zTop   = math.max(f_level(o, oteHi), f_level(o, oteLo))
+    zBot   = math.min(f_level(o, oteHi), f_level(o, oteLo))
+    rEdge  = o.endBar + extendBars
+    entry  = f_level(o, oteSweet)
+    stop   = f_level(o, 1.0)
+    target = f_level(o, targetFib)
+    risk   = math.abs(entry - stop)
+    rr     = risk > 0 ? math.abs(target - entry) / risk : 0.0
+
+    // OTE entry zone (the shaded box) + entry / stop / target lines
+    o.zone    := box.new(o.endBar, zTop, rEdge, zBot, border_color = color.new(col, 35), bgcolor = fill, border_width = 1)
+    o.lEntry  := line.new(o.endBar, entry,  rEdge, entry,  color = col,                       width = 2)
+    o.lStop   := line.new(o.endBar, stop,   rEdge, stop,   color = color.new(color.red, 0),   width = 1, style = line.style_dashed)
+    o.lTarget := line.new(o.endBar, target, rEdge, target, color = color.new(color.green, 0), width = 1, style = line.style_dashed)
+    if showEq
+        o.lEq := line.new(o.endBar, f_level(o, 0.5), rEdge, f_level(o, 0.5), color = color.new(color.gray, 50), style = line.style_dotted)
+
+    // anchor leg — verify the fib is pinned to the real swing low/high
     if showLeg
-        o.legLine := line.new(o.startBar, o.legStart, o.endBar, o.legEnd,
-             color = color.new(col, 0), width = 2)
-        startStyle = o.isBull ? label.style_label_up   : label.style_label_down
-        endStyle   = o.isBull ? label.style_label_down : label.style_label_up
-        array.push(o.tags, label.new(o.startBar, o.legStart,
-             "1.0 origin\n(" + (o.isBull ? "swing low" : "swing high") + ")",
-             style = startStyle, color = color.new(col, 10), textcolor = color.white, size = size.small))
-        array.push(o.tags, label.new(o.endBar, o.legEnd,
-             "0.0 anchor\n(" + (o.isBull ? "swing high" : "swing low") + ")",
-             style = endStyle, color = color.new(col, 10), textcolor = color.white, size = size.small))
-    o.lSweet := line.new(o.endBar, f_level(o, oteSweet), rEdge, f_level(o, oteSweet),
-         color = col, width = 2, style = line.style_solid)
-    if showEq
-        o.lEq := line.new(o.endBar, f_level(o, 0.5), rEdge, f_level(o, 0.5),
-             color = color.new(color.gray, 30), style = line.style_dashed)
-    // stop reference at the leg origin (fib 1.0) — invalidation level
-    o.lStop := line.new(o.endBar, f_level(o, 1.0), rEdge, f_level(o, 1.0),
-         color = color.new(color.red, 20), style = line.style_dashed)
-    if showTargets
-        o.lT1 := line.new(o.endBar, f_level(o, -0.27), rEdge, f_level(o, -0.27),
-             color = color.new(col, 40), style = line.style_dotted)
-        o.lT2 := line.new(o.endBar, f_level(o, -0.62), rEdge, f_level(o, -0.62),
-             color = color.new(col, 40), style = line.style_dotted)
-        o.lT3 := line.new(o.endBar, f_level(o, -1.0),  rEdge, f_level(o, -1.0),
-             color = color.new(col, 40), style = line.style_dotted)
-    // ---- name every level with a tag at the right edge ----
-    dirTxt = o.isBull ? "LONG" : "SHORT"
-    green  = color.new(color.green, 0)
-    f_tag(o.tags, rEdge, f_level(o, oteHi),    "OTE " + str.tostring(oteHi)  + " (zone top)", col)
-    f_tag(o.tags, rEdge, f_level(o, oteSweet), "ENTRY " + str.tostring(oteSweet) + " — " + dirTxt + " sweet spot", col)
-    f_tag(o.tags, rEdge, f_level(o, oteLo),    "OTE " + str.tostring(oteLo)  + " (zone bottom)", col)
-    f_tag(o.tags, rEdge, f_level(o, 1.0),      "STOP 1.0 (leg origin)", color.new(color.red, 0))
-    if showEq
-        f_tag(o.tags, rEdge, f_level(o, 0.5),  "EQ 0.5 (premium/discount)", color.new(color.gray, 0))
-    if showTargets
-        f_tag(o.tags, rEdge, f_level(o, -0.27), "TP1 -0.27", green)
-        f_tag(o.tags, rEdge, f_level(o, -0.62), "TP2 -0.62", green)
-        f_tag(o.tags, rEdge, f_level(o, -1.0),  "TP3 -1.0", green)
-    if showLabels
-        tag = (o.isBull ? "▲ OTE LONG" : "▼ OTE SHORT") + "  score " + str.tostring(o.score) + "/9"
-        tag := tag + "\n" + (o.sweep ? "✓" : "✗") + " sweep   " + (o.mss ? "✓" : "✗") + " MSS   " + (o.disp ? "✓" : "✗") + " displ"
-        tag := tag + "\n" + (o.discount ? "✓" : "✗") + (o.isBull ? " discount" : " premium")
-        tag := tag + "   " + (o.fvg ? "✓" : "✗") + " FVG   " + (o.rb ? "✓" : "✗") + " RB   " + (o.ob ? "✓" : "✗") + " OB"
-        tag := tag + "\n" + (o.kz ? "✓" : "✗") + " KZ   " + (o.htf ? "✓" : "✗") + " HTF bias (" + htfTF + ")"
-        tag := tag + "\n" + (o.smt ? "✓" : "✗") + " SMT (" + smtSym + ")"
-        o.lab := label.new(o.endBar, o.isBull ? zBot : zTop, tag,
+        o.legLine := line.new(o.startBar, o.legStart, o.endBar, o.legEnd, color = color.new(col, 20), width = 1, style = line.style_dotted)
+        o.aLow  := label.new(o.startBar, o.legStart, o.isBull ? "swing low" : "swing high",
              style = o.isBull ? label.style_label_up : label.style_label_down,
-             color = color.new(col, 15), textcolor = color.white, size = size.small)
+             color = color.new(col, 30), textcolor = color.white, size = size.tiny)
+        o.aHigh := label.new(o.endBar, o.legEnd, o.isBull ? "swing high" : "swing low",
+             style = o.isBull ? label.style_label_down : label.style_label_up,
+             color = color.new(col, 30), textcolor = color.white, size = size.tiny)
+
+    // the only three prices that matter, tagged at the right edge
+    if showPrices
+        o.tEntry  := f_priceTag(rEdge, entry,  "Entry",  col)
+        o.tStop   := f_priceTag(rEdge, stop,   "Stop",   color.new(color.red, 0))
+        o.tTarget := f_priceTag(rEdge, target, "Target", color.new(color.green, 0))
+
+    // compact header: direction · score · R:R + which key confluences hit
+    if showLabels
+        head = (o.isBull ? "OTE LONG" : "OTE SHORT") + "   " + str.tostring(o.score) + "/9   RR " + str.tostring(rr, "#.#")
+        conf = (o.sweep ? "✓sweep " : "") + (o.mss ? "✓MSS " : "") + (o.disp ? "✓displ " : "") + (o.fvg ? "✓FVG " : "") + (o.ob ? "✓OB " : "") + (o.htf ? "✓HTF" : "")
+        o.lab := label.new(o.endBar, o.isBull ? zTop : zBot, head + "\n" + conf,
+             style = o.isBull ? label.style_label_down : label.style_label_up,
+             color = color.new(col, 10), textcolor = color.white, size = size.small)
     o
 
 // ---------------------------------------------------------------------------
