@@ -125,7 +125,6 @@ var line  lnT = na
 var label lbE = na
 var label lbS = na
 var label lbT = na
-var int   startBar = 0
 
 // Draw the levels whenever there's a 1H trend (not only on a live fill setup), so
 // you can always SEE where the entry/stop/target would be. The guidance box below
@@ -139,19 +138,24 @@ if showNow
     tY   = dirLong ? longTgt  : shortTgt
     qty  = dirLong ? longQty  : shortQty
     side = dirLong ? "BUY LIMIT" : "SELL LIMIT"
+    // Left anchor TRAILS the current bar by a fixed window (clamped at 0) instead of
+    // staying pinned to the bar where the line was first created. This keeps x1 close
+    // to "now" so it never exceeds Pine's bar-index distance limit (the RE10026 error
+    // that fires once the chart runs ~10,000 bars past the creation bar). extend.right
+    // still draws the level across the chart to the right edge.
+    leftX = math.max(0, bar_index - 200)
     if na(lnE)
-        startBar := bar_index
-        lnE := line.new(startBar, eY, bar_index, eY, color = color.orange, width = 2, extend = extend.right)
-        lnS := line.new(startBar, sY, bar_index, sY, color = color.red,   width = 1, style = line.style_dashed, extend = extend.right)
-        lnT := line.new(startBar, tY, bar_index, tY, color = color.green, width = 1, style = line.style_dashed, extend = extend.right)
+        lnE := line.new(leftX, eY, bar_index, eY, color = color.orange, width = 2, extend = extend.right)
+        lnS := line.new(leftX, sY, bar_index, sY, color = color.red,   width = 1, style = line.style_dashed, extend = extend.right)
+        lnT := line.new(leftX, tY, bar_index, tY, color = color.green, width = 1, style = line.style_dashed, extend = extend.right)
         lbE := label.new(bar_index, eY, "", style = label.style_label_left, color = color.new(color.orange, 0), textcolor = color.white, size = size.small)
         lbS := label.new(bar_index, sY, "", style = label.style_label_left, color = color.new(color.red, 0),   textcolor = color.white, size = size.small)
         lbT := label.new(bar_index, tY, "", style = label.style_label_left, color = color.new(color.green, 0), textcolor = color.white, size = size.small)
-    line.set_xy1(lnE, startBar, eY)
+    line.set_xy1(lnE, leftX, eY)
     line.set_xy2(lnE, bar_index, eY)
-    line.set_xy1(lnS, startBar, sY)
+    line.set_xy1(lnS, leftX, sY)
     line.set_xy2(lnS, bar_index, sY)
-    line.set_xy1(lnT, startBar, tY)
+    line.set_xy1(lnT, leftX, tY)
     line.set_xy2(lnT, bar_index, tY)
     label.set_xy(lbE, bar_index, eY)
     label.set_text(lbE, side + "  " + str.tostring(eY, format.mintick) + "   (" + str.tostring(qty) + " ct)")
