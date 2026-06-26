@@ -106,53 +106,60 @@ plot(showVwap ? vwap : na, "VWAP (live limit level)", color.new(color.blue, 0), 
 plotshape(freshLong,  "Fresh LONG",  shape.triangleup,   location.belowbar, color.new(color.teal, 0), size = size.small)
 plotshape(freshShort, "Fresh SHORT", shape.triangledown, location.abovebar, color.new(color.maroon, 0), size = size.small)
 
-// ── Frozen order levels ── three clear horizontal lines + price tags, locked in
-// at the bar the setup forms, so you can see EXACTLY where to rest the limit and
-// place the stop/target. Orange = limit entry, red dashed = stop, green dashed = target.
+// ── Order levels ── three labeled horizontal lines that RIDE the live VWAP while a
+// setup is active and unfilled, so the orange ENTRY line always sits exactly on the
+// blue VWAP. Place your resting limit at the orange price; as VWAP drifts, the level
+// updates with it. The lines disappear once price reaches VWAP (your fill) or the
+// window closes. Orange = limit entry, red dashed = stop, green dashed = target.
 var line  lnE = na
 var line  lnS = na
 var line  lnT = na
 var label lbE = na
 var label lbS = na
 var label lbT = na
-var int   fDir = 0
+var int   startBar = 0
 
-clearLevels = newSession or ((freshLong or freshShort) and showLevels)
-if clearLevels
-    line.delete(lnE)
-    line.delete(lnS)
-    line.delete(lnT)
-    label.delete(lbE)
-    label.delete(lbS)
-    label.delete(lbT)
-    lnE := na
-    lnS := na
-    lnT := na
-    lbE := na
-    lbS := na
-    lbT := na
-    if newSession
-        fDir := 0
-
-if (freshLong or freshShort) and showLevels
-    fDir := freshLong ? 1 : -1
-    fE = entry
-    fS = freshLong ? longStop : shortStop
-    fT = freshLong ? longTgt  : shortTgt
-    qty  = freshLong ? longQty : shortQty
-    side = freshLong ? "BUY LIMIT" : "SELL LIMIT"
-    lnE := line.new(bar_index, fE, bar_index + 1, fE, color = color.orange, width = 2, extend = extend.right)
-    lnS := line.new(bar_index, fS, bar_index + 1, fS, color = color.red,   width = 1, style = line.style_dashed, extend = extend.right)
-    lnT := line.new(bar_index, fT, bar_index + 1, fT, color = color.green, width = 1, style = line.style_dashed, extend = extend.right)
-    lbE := label.new(bar_index, fE, side + "  " + str.tostring(fE, format.mintick) + "   (" + str.tostring(qty) + " ct)", style = label.style_label_left, color = color.new(color.orange, 0), textcolor = color.white, size = size.small)
-    lbS := label.new(bar_index, fS, "SL  " + str.tostring(fS, format.mintick), style = label.style_label_left, color = color.new(color.red, 0),   textcolor = color.white, size = size.small)
-    lbT := label.new(bar_index, fT, "TP  " + str.tostring(fT, format.mintick), style = label.style_label_left, color = color.new(color.green, 0), textcolor = color.white, size = size.small)
-
-// keep the price tags pinned to the right edge while the levels are live
-if fDir != 0 and not na(lbE)
-    label.set_x(lbE, bar_index)
-    label.set_x(lbS, bar_index)
-    label.set_x(lbT, bar_index)
+showNow = setupActive and showLevels
+if showNow
+    eY   = entry
+    sY   = isLong ? longStop : shortStop
+    tY   = isLong ? longTgt  : shortTgt
+    qty  = isLong ? longQty  : shortQty
+    side = isLong ? "BUY LIMIT" : "SELL LIMIT"
+    if na(lnE)
+        startBar := bar_index
+        lnE := line.new(startBar, eY, bar_index, eY, color = color.orange, width = 2, extend = extend.right)
+        lnS := line.new(startBar, sY, bar_index, sY, color = color.red,   width = 1, style = line.style_dashed, extend = extend.right)
+        lnT := line.new(startBar, tY, bar_index, tY, color = color.green, width = 1, style = line.style_dashed, extend = extend.right)
+        lbE := label.new(bar_index, eY, "", style = label.style_label_left, color = color.new(color.orange, 0), textcolor = color.white, size = size.small)
+        lbS := label.new(bar_index, sY, "", style = label.style_label_left, color = color.new(color.red, 0),   textcolor = color.white, size = size.small)
+        lbT := label.new(bar_index, tY, "", style = label.style_label_left, color = color.new(color.green, 0), textcolor = color.white, size = size.small)
+    line.set_xy1(lnE, startBar, eY)
+    line.set_xy2(lnE, bar_index, eY)
+    line.set_xy1(lnS, startBar, sY)
+    line.set_xy2(lnS, bar_index, sY)
+    line.set_xy1(lnT, startBar, tY)
+    line.set_xy2(lnT, bar_index, tY)
+    label.set_xy(lbE, bar_index, eY)
+    label.set_text(lbE, side + "  " + str.tostring(eY, format.mintick) + "   (" + str.tostring(qty) + " ct)")
+    label.set_xy(lbS, bar_index, sY)
+    label.set_text(lbS, "SL  " + str.tostring(sY, format.mintick))
+    label.set_xy(lbT, bar_index, tY)
+    label.set_text(lbT, "TP  " + str.tostring(tY, format.mintick))
+else
+    if not na(lnE)
+        line.delete(lnE)
+        line.delete(lnS)
+        line.delete(lnT)
+        label.delete(lbE)
+        label.delete(lbS)
+        label.delete(lbT)
+        lnE := na
+        lnS := na
+        lnT := na
+        lbE := na
+        lbS := na
+        lbT := na
 
 // ───────────────────────── info panel ─────────────────────────
 var table panel = table.new(position.top_right, 2, 7, border_width = 1)
