@@ -1,0 +1,134 @@
+//@version=6
+// VWAP Pullback — A+ Limit Scanner
+// Backtest-confirmed primary strategy (BACKTEST_RESULTS.md Rounds 7–8):
+//   dual-EMA HTF trend filter -> in an uptrend rest a BUY-LIMIT at session VWAP,
+//   in a downtrend a SELL-LIMIT at VWAP. Stop 0.5xATR beyond, target RR 1.5–2.0,
+//   NY-AM window, ~1 trade/session. PF ~2.6 bull / ~2.8 bear on QQQ->NQ proxy.
+// This is an INDICATOR: it marks the level, stop, target and position size.
+// You place the resting limit order yourself, then walk away. No market orders.
+indicator("VWAP Pullback — A+ Limit Scanner", "VWAP Pull", overlay = true,
+     max_lines_count = 500, max_labels_count = 500)
+
+// ───────────────────────── inputs ─────────────────────────
+grpS = "Setup"
+htfRes     = input.timeframe("60",  "HTF for trend bias",      group = grpS, tooltip = "Higher timeframe the EMA-cross bias is read from. 60 = 1H.")
+emaFastLen = input.int(50,  "HTF fast EMA",  minval = 1,        group = grpS)
+emaSlowLen = input.int(100, "HTF slow EMA",  minval = 1,        group = grpS, tooltip = "Bias is BULL when fast EMA > slow EMA, BEAR when fast < slow. Backtest 'dual' filter.")
+sessTimes  = input.session("0930-1100", "Entry window (killzone)", group = grpS)
+sessTz     = input.string("America/New_York", "Session timezone", group = grpS)
+oncePerDay = input.bool(true, "Only the first setup per session", group = grpS, tooltip = "Matches the ~1 trade/session discipline. Suppresses later same-day signals.")
+
+grpR = "Risk / Targets"
+atrLen   = input.int(14,   "ATR length",     minval = 1,      group = grpR)
+stopMult = input.float(0.5,"Stop = ATR ×",   minval = 0.1, step = 0.1, group = grpR, tooltip = "Backtest sweet spot 0.4–0.5. A full-ATR stop breaks the edge — keep it tight.")
+rr       = input.float(2.0,"Target R:R",     minval = 0.5, step = 0.1, group = grpR, tooltip = "1.5–2.0 tested best. Bears can favor 1.5.")
+
+grpP = "Position sizing"
+acct     = input.float(50000, "Account size ($)",        minval = 0, group = grpP)
+riskPct  = input.float(1.0,   "Risk per trade (%)",      minval = 0.1, step = 0.1, group = grpP)
+pointVal = input.float(2.0,   "$ per point (MNQ = 2)",   minval = 0.01, group = grpP, tooltip = "MNQ = $2/pt, NQ = $20/pt, MES = $5, ES = $50.")
+
+grpV = "Display"
+showLevels = input.bool(true, "Entry / stop / target lines", group = grpV)
+showPanel  = input.bool(true, "Info panel",                  group = grpV)
+showVwap   = input.bool(true, "VWAP line",                   group = grpV)
+
+// ───────────────────────── core calcs ─────────────────────────
+vwap = ta.vwap(hlc3)
+atr  = ta.atr(atrLen)
+
+emaFast = request.security(syminfo.tickerid, htfRes, ta.ema(close, emaFastLen), barmerge.gaps_off, barmerge.lookahead_off)
+emaSlow = request.security(syminfo.tickerid, htfRes, ta.ema(close, emaSlowLen), barmerge.gaps_off, barmerge.lookahead_off)
+biasBull = emaFast > emaSlow
+biasBear = emaFast < emaSlow
+
+inWin = not na(time(timeframe.period, sessTimes, sessTz))
+newSession = inWin and not inWin[1]
+var bool tradedToday = false
+if newSession
+    tradedToday := false
+
+// setup = trend agrees AND price is on the far side of VWAP (a pullback to the
+// mean is still pending). The resting limit waits at VWAP for price to come back.
+longCond  = inWin and biasBull and close > vwap
+shortCond = inWin and biasBear and close < vwap
+
+// entry / stop / target
+entry     = vwap
+longStop  = vwap - stopMult * atr
+longTgt   = entry + rr * (entry - longStop)
+shortStop = vwap + stopMult * atr
+shortTgt  = entry - rr * (shortStop - entry)
+
+// position size (contracts) from fixed-% risk
+riskDollars = acct * riskPct / 100.0
+longRiskPts = entry - longStop
+shortRiskPts= shortStop - entry
+longQty  = longRiskPts  > 0 ? math.floor(riskDollars / (longRiskPts  * pointVal)) : 0
+shortQty = shortRiskPts > 0 ? math.floor(riskDollars / (shortRiskPts * pointVal)) : 0
+
+// fresh trigger = first bar the condition turns true (this session)
+freshLong  = longCond  and not longCond[1]  and (not oncePerDay or not tradedToday)
+freshShort = shortCond and not shortCond[1] and (not oncePerDay or not tradedToday)
+if freshLong or freshShort
+    tradedToday := true
+
+setupActive = (longCond or shortCond) and (not oncePerDay or freshLong or freshShort or tradedToday)
+isLong = longCond and biasBull
+
+// ───────────────────────── plots ─────────────────────────
+plot(showVwap ? vwap : na, "VWAP", color.new(color.blue, 0), 2)
+
+pEntry = showLevels and setupActive ? entry : na
+pStop  = showLevels and setupActive ? (isLong ? longStop : shortStop) : na
+pTgt   = showLevels and setupActive ? (isLong ? longTgt  : shortTgt)  : na
+plot(pEntry, "Limit entry", color.new(color.orange, 0), 2, plot.style_linebr)
+plot(pStop,  "Stop",        color.new(color.red, 0),    1, plot.style_linebr)
+plot(pTgt,   "Target",      color.new(color.green, 0),  1, plot.style_linebr)
+
+// fresh-setup markers
+plotshape(freshLong,  "Fresh LONG",  shape.triangleup,   location.belowbar, color.new(color.teal, 0), size = size.small)
+plotshape(freshShort, "Fresh SHORT", shape.triangledown, location.abovebar, color.new(color.maroon, 0), size = size.small)
+
+// label on the fresh trigger with the full plan
+if freshLong
+    qty = longQty
+    label.new(bar_index, low, text = "⬆ BUY-LIMIT @ " + str.tostring(entry, format.mintick) +
+         "\nSL " + str.tostring(longStop, format.mintick) + "  TP " + str.tostring(longTgt, format.mintick) +
+         "\n" + str.tostring(qty) + " ct · risk $" + str.tostring(riskDollars, "#") ,
+         style = label.style_label_up, color = color.new(color.teal, 10), textcolor = color.white, size = size.normal)
+if freshShort
+    qty = shortQty
+    label.new(bar_index, high, text = "⬇ SELL-LIMIT @ " + str.tostring(entry, format.mintick) +
+         "\nSL " + str.tostring(shortStop, format.mintick) + "  TP " + str.tostring(shortTgt, format.mintick) +
+         "\n" + str.tostring(qty) + " ct · risk $" + str.tostring(riskDollars, "#") ,
+         style = label.style_label_down, color = color.new(color.maroon, 10), textcolor = color.white, size = size.normal)
+
+// ───────────────────────── info panel ─────────────────────────
+var table panel = table.new(position.top_right, 2, 7, border_width = 1)
+f_row(tbl, r, k, v, col) =>
+    table.cell(tbl, 0, r, k, text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, r, v, text_color = col, text_size = size.small, text_halign = text.align_right)
+if showPanel and barstate.islast
+    biasTxt = biasBull ? "BULL ▲" : biasBear ? "BEAR ▼" : "flat"
+    biasCol = biasBull ? color.teal : biasBear ? color.maroon : color.gray
+    winTxt  = inWin ? "OPEN" : "closed"
+    sActive = setupActive
+    sTxt = not sActive ? "— none —" : isLong ? "LONG ready" : "SHORT ready"
+    sCol = not sActive ? color.gray : isLong ? color.teal : color.maroon
+    e = isLong ? entry : entry
+    s = isLong ? longStop : shortStop
+    t = isLong ? longTgt : shortTgt
+    q = isLong ? longQty : shortQty
+    f_row(panel, 0, "HTF bias",  biasTxt, biasCol)
+    f_row(panel, 1, "Window",    winTxt, inWin ? color.teal : color.gray)
+    f_row(panel, 2, "Setup",     sTxt, sCol)
+    f_row(panel, 3, "Limit @",   sActive ? str.tostring(e, format.mintick) : "—", color.orange)
+    f_row(panel, 4, "Stop",      sActive ? str.tostring(s, format.mintick) : "—", color.red)
+    f_row(panel, 5, "Target",    sActive ? str.tostring(t, format.mintick) : "—", color.green)
+    f_row(panel, 6, "Size (ct)", sActive ? str.tostring(q) : "—", color.white)
+
+// ───────────────────────── alerts ─────────────────────────
+alertcondition(freshLong,  "VWAP long limit",  "VWAP Pullback: BULL bias — rest a BUY-LIMIT at session VWAP. Stop 0.5xATR below, target RR.")
+alertcondition(freshShort, "VWAP short limit", "VWAP Pullback: BEAR bias — rest a SELL-LIMIT at session VWAP. Stop 0.5xATR above, target RR.")
+alertcondition(freshLong or freshShort, "VWAP setup (either)", "VWAP Pullback A+ setup formed — check the chart and place your resting limit.")
