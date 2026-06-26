@@ -1,0 +1,320 @@
+//@version=6
+// =============================================================================
+//  OTE — Optimal Trade Entry (Backtest STRATEGY)
+//  Strategy version of the OTE Confluence indicator. Same leg detection and
+//  confluence stack (MSS, sweep, premium/discount, FVG, killzone, HTF bias),
+//  but with real backtest execution:
+//    • Limit entry at the OTE fib level (default 0.705 sweet spot)
+//    • Stop at the leg origin (configurable fib) +/- ATR buffer
+//    • Target by fixed R:R or a fib projection (-0.27 / -0.62 / -1.0)
+//    • Risk-% position sizing computed from the stop distance
+//    • Date-range filter for clean backtest windows
+//  Defaults tuned for LOW timeframes (1m-15m). See swingLen tooltip per TF.
+// =============================================================================
+// Commission/slippage set for MICRO index futures (MNQ): point value ($2/pt for
+// MNQ) is auto-handled via syminfo.pointvalue, so risk-% sizing is correct on any
+// symbol. Capital & commission are inputs below. Stocks/forex: switch
+// commission_type to strategy.commission.percent and set commission ~0.02.
+strategy("OTE Strategy (Confluence)", "OTE-S", overlay = true,
+     initial_capital = input.int(5000, "Initial capital $", minval = 100, group = "Trade / Execution"),
+     default_qty_type = strategy.fixed, default_qty_value = 1,
+     pyramiding = 0, calc_on_order_fills = false, process_orders_on_close = false,
+     commission_type = strategy.commission.cash_per_contract,
+     commission_value = input.float(1.0, "Commission $/contract", minval = 0, step = 0.1, group = "Trade / Execution"),
+     slippage = 1,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ---------------------------------------------------------------------------
+//  INPUTS
+// ---------------------------------------------------------------------------
+grpS  = "Structure / Swings"
+swingLen   = input.int(4, "Swing pivot length", minval = 2, maxval = 50, group = grpS,
+     tooltip = "1m: 3 | 5m: 4 | 15m: 5 | 1H+: 7-10.")
+useBody    = input.bool(false, "Use bodies for sweep/MSS", group = grpS)
+
+grpF  = "OTE Fib zone"
+oteHi      = input.float(0.62, "OTE start (shallow)", step = 0.005, group = grpF)
+oteSweet   = input.float(0.705, "OTE sweet spot",     step = 0.005, group = grpF)
+oteLo      = input.float(0.79, "OTE end (deep)",      step = 0.005, group = grpF)
+
+grpT  = "Trade / Execution"
+tradeDir   = input.string("Both", "Direction", options = ["Both", "Long only", "Short only"], group = grpT)
+entryFib   = input.float(0.705, "Entry fib level", step = 0.005, group = grpT,
+     tooltip = "Where the limit entry sits inside the OTE zone. 0.705 = sweet spot.")
+slFib      = input.float(1.0, "Stop fib level (origin = 1.0)", step = 0.01, group = grpT,
+     tooltip = "1.0 = the leg origin (swing low for longs). >1.0 = a little beyond it.")
+slBufATR   = input.float(0.25, "Stop ATR buffer", minval = 0, step = 0.05, group = grpT)
+useRR      = input.bool(true, "Use fixed R:R target", group = grpT)
+rr         = input.float(2.0, "Reward : Risk", minval = 0.1, step = 0.1, group = grpT)
+tpFib      = input.float(-0.62, "…or fib target (if R:R off)", step = 0.01, group = grpT,
+     tooltip = "Projection beyond the leg extreme: -0.27 / -0.62 / -1.0.")
+riskPct    = input.float(1.0, "Risk % of equity per trade", minval = 0.01, step = 0.1, group = grpT)
+wholeContracts = input.bool(false, "Round to whole contracts", group = grpT,
+     tooltip = "ON = realistic futures sizing (whole contracts; needs enough capital or it floors to 0). OFF = fractional, for smoother backtest stats.")
+
+grpC  = "Confluence gates"
+strictAnchor = input.bool(true, "Strict ICT anchor (leg must be sweep → MSS)", group = grpC,
+     tooltip = "Only take a trade when the leg ran liquidity at its origin AND broke structure at its extreme — the textbook OTE anchor.")
+reqDisp    = input.bool(true,  "Require displacement (strong impulse leg)", group = grpC)
+dispMult   = input.float(1.5, "Displacement min (× ATR)", minval = 0.1, step = 0.1, group = grpC)
+reqOB      = input.bool(false, "Require Order Block inside OTE zone", group = grpC)
+reqMSS     = input.bool(true,  "Require Market Structure Shift", group = grpC)
+reqSweep   = input.bool(true,  "Require liquidity sweep", group = grpC)
+reqFVG     = input.bool(false, "Require FVG inside OTE zone", group = grpC)
+reqRB      = input.bool(false, "Require Rejection Block inside OTE zone", group = grpC)
+reqKZ      = input.bool(false, "Require active killzone", group = grpC)
+minScore   = input.int(3, "Min confluence score (1-8)", minval = 1, maxval = 8, group = grpC)
+
+grpK  = "Killzones (chart exchange time)"
+kzLondon   = input.session("0200-0500", "London killzone", group = grpK)
+kzNY       = input.session("0700-1000", "New York killzone", group = grpK)
+
+grpM  = "SMT Divergence"
+useSMT     = input.bool(false, "Require SMT divergence", group = grpM,
+     tooltip = "Positively-correlated instrument (ES↔NQ, BTC↔ETH, EURUSD↔GBPUSD). Bullish SMT = primary sweeps a low but the correlate holds a higher low.")
+smtSym     = input.symbol("CME_MINI:MES1!", "Correlated symbol", group = grpM)
+
+grpH  = "Higher-Timeframe Bias"
+useHTF     = input.bool(true, "Require HTF bias agreement", group = grpH)
+htfTF      = input.timeframe("60", "HTF timeframe", group = grpH,
+     tooltip = "~4-6x chart TF. 1m->15m | 5m->30m/1H | 15m->1H/4H.")
+htfMethod  = input.string("Price vs EMA", "Bias method", options = ["Price vs EMA", "EMA cross"], group = grpH)
+htfEmaF    = input.int(21, "Fast / bias EMA", minval = 1, group = grpH)
+htfEmaS    = input.int(50, "Slow EMA", minval = 1, group = grpH)
+
+grpD  = "Backtest window"
+useDates   = input.bool(false, "Limit to date range", group = grpD)
+fromDate   = input.time(timestamp("01 Jan 2024 00:00"), "From", group = grpD)
+toDate     = input.time(timestamp("01 Jan 2027 00:00"), "To", group = grpD)
+
+grpV  = "Visuals"
+colBull    = input.color(color.new(color.teal, 0), "Bull color", group = grpV)
+colBear    = input.color(color.new(color.red, 0),  "Bear color", group = grpV)
+showZones  = input.bool(true, "Draw OTE zones", group = grpV)
+
+inWindow = not useDates or (time >= fromDate and time <= toDate)
+
+// ---------------------------------------------------------------------------
+//  KILLZONE + HTF BIAS
+// ---------------------------------------------------------------------------
+inSession(sess) => not na(time(timeframe.period, sess))
+kzActive = inSession(kzLondon) or inSession(kzNY)
+
+[hClose, hFast, hSlow] = request.security(syminfo.tickerid, htfTF,
+     [close, ta.ema(close, htfEmaF), ta.ema(close, htfEmaS)],
+     lookahead = barmerge.lookahead_off)
+htfBull = htfMethod == "EMA cross" ? hFast > hSlow : hClose > hSlow
+htfBear = htfMethod == "EMA cross" ? hFast < hSlow : hClose < hSlow
+
+[smtL, smtH] = request.security(smtSym, timeframe.period, [low, high],
+     lookahead = barmerge.lookahead_off)
+
+atr = ta.atr(14)
+
+// ---------------------------------------------------------------------------
+//  SWING PIVOTS
+// ---------------------------------------------------------------------------
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow (low,  swingLen, swingLen)
+
+var float lastPH = na
+var int   lastPHbar = na
+var float prevPH = na
+var float lastPL = na
+var int   lastPLbar = na
+var float prevPL = na
+var float lastCorrPH = na
+var float prevCorrPH = na
+var float lastCorrPL = na
+var float prevCorrPL = na
+if not na(ph)
+    prevPH    := lastPH
+    lastPH    := ph
+    lastPHbar := bar_index - swingLen
+    prevCorrPH := lastCorrPH
+    lastCorrPH := smtH[swingLen]
+if not na(pl)
+    prevPL    := lastPL
+    lastPL    := pl
+    lastPLbar := bar_index - swingLen
+    prevCorrPL := lastCorrPL
+    lastCorrPL := smtL[swingLen]
+
+// ---------------------------------------------------------------------------
+//  FVG
+// ---------------------------------------------------------------------------
+var float bFVGtop = na
+var float bFVGbot = na
+var float sFVGtop = na
+var float sFVGbot = na
+if low > high[2]
+    bFVGbot := high[2]
+    bFVGtop := low
+if high < low[2]
+    sFVGtop := low[2]
+    sFVGbot := high
+
+// Rejection blocks (wick-dominant candles)
+_bodyHi = math.max(open, close)
+_bodyLo = math.min(open, close)
+_body   = _bodyHi - _bodyLo
+_upWick = high - _bodyHi
+_dnWick = _bodyLo - low
+bullRB  = _dnWick > _body and _dnWick > _upWick
+bearRB  = _upWick > _body and _upWick > _dnWick
+var float bRBtop = na
+var float bRBbot = na
+var float sRBtop = na
+var float sRBbot = na
+if bullRB
+    bRBtop := _bodyLo
+    bRBbot := low
+if bearRB
+    sRBtop := high
+    sRBbot := _bodyHi
+
+// Order blocks (last opposite candle before displacement)
+bullOB = close[1] < open[1] and close > high[1]
+bearOB = close[1] > open[1] and close < low[1]
+var float bOBtop = na
+var float bOBbot = na
+var float sOBtop = na
+var float sOBbot = na
+if bullOB
+    bOBtop := high[1]
+    bOBbot := low[1]
+if bearOB
+    sOBtop := high[1]
+    sOBbot := low[1]
+
+// ---------------------------------------------------------------------------
+//  ARMED SETUP STATE (one long + one short pending at a time)
+// ---------------------------------------------------------------------------
+f_level(legEnd, legStart, r) => legEnd - (legEnd - legStart) * r
+
+var bool  Larmed = false
+var float Lentry = na
+var float Lsl = na
+var float Ltp = na
+var float LlegStart = na
+var float LlegEnd = na
+var int   Lbar = na
+var bool  Sarmed = false
+var float Sentry = na
+var float Ssl = na
+var float Stp = na
+var float SlegStart = na
+var float SlegEnd = na
+var int   Sbar = na
+
+allowLong  = tradeDir != "Short only"
+allowShort = tradeDir != "Long only"
+
+// score: base 1 + sweep + mss + fvg + rb + ob + disp + kz  (max 8)
+f_score(sweep, mss, fvg, rb, ob, disp, kz) => 1 + (sweep ? 1 : 0) + (mss ? 1 : 0) + (fvg ? 1 : 0) + (rb ? 1 : 0) + (ob ? 1 : 0) + (disp ? 1 : 0) + (kz ? 1 : 0)
+
+// ---------------------------------------------------------------------------
+//  NEW BULLISH LEG -> arm a long
+// ---------------------------------------------------------------------------
+if allowLong and not na(ph) and not na(lastPL) and lastPHbar > lastPLbar and lastPH > lastPL
+    sweep = not na(prevPL) and lastPL < prevPL
+    mss   = not na(prevPH) and lastPH > prevPH
+    zT = f_level(lastPH, lastPL, oteHi)
+    zB = f_level(lastPH, lastPL, oteLo)
+    fvg = not na(bFVGtop) and bFVGtop >= zB and bFVGbot <= zT
+    rb  = not na(bRBtop) and bRBtop >= zB and bRBbot <= zT
+    ob  = not na(bOBtop) and bOBtop >= zB and bOBbot <= zT
+    disp = (lastPH - lastPL) >= dispMult * atr
+    smt = not na(prevPL) and not na(prevCorrPL) and lastPL < prevPL and lastCorrPL > prevCorrPL
+    score = f_score(sweep, mss, fvg, rb, ob, disp, kzActive)
+    gates = (not strictAnchor or (sweep and mss)) and (not reqDisp or disp) and (not reqOB or ob) and
+             (not reqMSS or mss) and (not reqSweep or sweep) and (not reqFVG or fvg) and
+             (not reqRB or rb) and (not useSMT or smt) and (not reqKZ or kzActive) and (not useHTF or htfBull) and score >= minScore
+    if gates
+        Lentry := f_level(lastPH, lastPL, entryFib)
+        Lsl    := f_level(lastPH, lastPL, slFib) - slBufATR * atr
+        Ltp    := useRR ? Lentry + rr * (Lentry - Lsl) : f_level(lastPH, lastPL, tpFib)
+        LlegStart := lastPL
+        LlegEnd   := lastPH
+        Lbar      := bar_index
+        Larmed    := Lentry > Lsl and Ltp > Lentry
+        if showZones and Larmed
+            box.new(lastPHbar, zT, bar_index + 20, zB, border_color = colBull,
+                 bgcolor = color.new(colBull, 85), border_width = 1)
+
+// ---------------------------------------------------------------------------
+//  NEW BEARISH LEG -> arm a short
+// ---------------------------------------------------------------------------
+if allowShort and not na(pl) and not na(lastPH) and lastPLbar > lastPHbar and lastPL < lastPH
+    sweep = not na(prevPH) and lastPH > prevPH
+    mss   = not na(prevPL) and lastPL < prevPL
+    zT = f_level(lastPL, lastPH, oteLo)
+    zB = f_level(lastPL, lastPH, oteHi)
+    fvg = not na(sFVGtop) and sFVGtop >= zB and sFVGbot <= zT
+    rb  = not na(sRBtop) and sRBtop >= zB and sRBbot <= zT
+    ob  = not na(sOBtop) and sOBtop >= zB and sOBbot <= zT
+    disp = (lastPH - lastPL) >= dispMult * atr
+    smt = not na(prevPH) and not na(prevCorrPH) and lastPH > prevPH and lastCorrPH < prevCorrPH
+    score = f_score(sweep, mss, fvg, rb, ob, disp, kzActive)
+    gates = (not strictAnchor or (sweep and mss)) and (not reqDisp or disp) and (not reqOB or ob) and
+             (not reqMSS or mss) and (not reqSweep or sweep) and (not reqFVG or fvg) and
+             (not reqRB or rb) and (not useSMT or smt) and (not reqKZ or kzActive) and (not useHTF or htfBear) and score >= minScore
+    if gates
+        Sentry := f_level(lastPL, lastPH, entryFib)
+        Ssl    := f_level(lastPL, lastPH, slFib) + slBufATR * atr
+        Stp    := useRR ? Sentry - rr * (Ssl - Sentry) : f_level(lastPL, lastPH, tpFib)
+        SlegStart := lastPH
+        SlegEnd   := lastPL
+        Sbar      := bar_index
+        Sarmed    := Ssl > Sentry and Sentry > Stp
+        if showZones and Sarmed
+            box.new(lastPLbar, zT, bar_index + 20, zB, border_color = colBear,
+                 bgcolor = color.new(colBear, 85), border_width = 1)
+
+// ---------------------------------------------------------------------------
+//  ORDER MANAGEMENT
+//  Place / refresh limit entry + bracket while armed; invalidate if origin lost.
+// ---------------------------------------------------------------------------
+f_qty(entryP, slP) =>
+    dist = math.abs(entryP - slP)
+    // risk per contract = stop distance (points) × point value (e.g. NQ $20, ES $50)
+    riskPerUnit = dist * syminfo.pointvalue
+    raw = riskPerUnit > 0 ? (strategy.equity * riskPct / 100.0) / riskPerUnit : na
+    q = wholeContracts ? math.floor(raw) : raw
+    q
+
+if inWindow and Larmed
+    if close < LlegStart            // origin broken before fill -> cancel
+        Larmed := false
+        strategy.cancel("L")
+    else
+        qty = f_qty(Lentry, Lsl)
+        if not na(qty) and qty > 0
+            strategy.entry("L", strategy.long, qty = qty, limit = Lentry)
+            strategy.exit("L-x", "L", stop = Lsl, limit = Ltp)
+
+if inWindow and Sarmed
+    if close > SlegStart
+        Sarmed := false
+        strategy.cancel("S")
+    else
+        qty = f_qty(Sentry, Ssl)
+        if not na(qty) and qty > 0
+            strategy.entry("S", strategy.short, qty = qty, limit = Sentry)
+            strategy.exit("S-x", "S", stop = Ssl, limit = Stp)
+
+// disarm once the position is open (exit bracket already manages it)
+if strategy.position_size > 0
+    Larmed := false
+if strategy.position_size < 0
+    Sarmed := false
+
+// ---------------------------------------------------------------------------
+//  PLOTS — entry / sl / tp of the active setups
+// ---------------------------------------------------------------------------
+plot(Larmed ? Lentry : na, "L entry", colBull,  style = plot.style_linebr)
+plot(Larmed ? Lsl    : na, "L stop",  color.red, style = plot.style_linebr)
+plot(Larmed ? Ltp    : na, "L target",color.green,style = plot.style_linebr)
+plot(Sarmed ? Sentry : na, "S entry", colBear,  style = plot.style_linebr)
+plot(Sarmed ? Ssl    : na, "S stop",  color.red, style = plot.style_linebr)
+plot(Sarmed ? Stp    : na, "S target",color.green,style = plot.style_linebr)
