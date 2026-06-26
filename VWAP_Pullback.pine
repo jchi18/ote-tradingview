@@ -14,7 +14,7 @@ grpS = "Setup"
 htfRes     = input.timeframe("60",  "HTF for trend bias",      group = grpS, tooltip = "Higher timeframe the EMA-cross bias is read from. 60 = 1H.")
 emaFastLen = input.int(50,  "HTF fast EMA",  minval = 1,        group = grpS)
 emaSlowLen = input.int(100, "HTF slow EMA",  minval = 1,        group = grpS, tooltip = "Bias is BULL when fast EMA > slow EMA, BEAR when fast < slow. Backtest 'dual' filter.")
-sessTimes  = input.session("0930-1100", "Entry window (killzone)", group = grpS)
+sessTimes  = input.session("0930-1600", "Entry window", group = grpS, tooltip = "When setups are allowed. Default = full RTH (09:30–16:00 ET). Backtest (Round 10): the edge holds all day (PF ~2.5–3.0); the only weak patch is the 11:00–13:00 lunch lull. Narrow this if you want fewer/cleaner trades, widen it (e.g. include Globex) at your own risk — only RTH was tested.")
 sessTz     = input.string("America/New_York", "Session timezone", group = grpS)
 
 grpW = "VWAP anchor"
@@ -254,7 +254,7 @@ if showCoach and barstate.islast
     string msg = ""
     color  bg  = color.new(color.gray, 0)
     if not inWin
-        msg := "⏸  OUTSIDE THE WINDOW (trade only 9:30–11:00 ET).  Nothing to do — watch and wait."
+        msg := "⏸  OUTSIDE YOUR TRADING WINDOW (set in Settings → Entry window).  Nothing to do — watch and wait."
         bg  := color.new(color.gray, 0)
     else if not biasBull and not biasBear
         msg := "⏸  NO CLEAR TREND — the 1H EMAs are flat.  Best action today: sit out, don't force a trade."
