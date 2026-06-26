@@ -67,3 +67,29 @@ entry 0.705 · risk 1%.
 Run that config in TradingView on **NQ**, over the **longest window your plan
 allows**, and ensure it spans **up, down, and chop**. Need **≥100 trades** and a
 PF that survives an **out-of-sample** slice (tune on NQ → verify on ES).
+
+---
+
+# Round 2 — current config, two instruments (QQQ + SPY 5m, ~60d)
+
+Recommended config: swingLen 4, strict anchor + HTF, R:R 2.5. Results in R.
+
+| Instrument | Trades | Win% | Profit Factor | Exp/trade |
+|---|---|---|---|---|
+| QQQ (SMT=SPY) | 27 | 44% | **1.95** | +0.54R |
+| SPY (SMT=QQQ) | 23 | 35% | **1.30** | +0.20R |
+
+R:R sweep (QQQ): 1.5→2.61 · 2.0→1.55 · **2.5→1.95** · 3.0→2.34.
+
+Filter contribution (QQQ, R:R 2.5):
+- **HTF bias = essential** — removing it drops PF 1.95 → 1.15.
+- **Strict anchor = quality** — off gives 89 trades but PF 1.43.
+- **Displacement = neutral** — 2.0×/1.5×/off all identical; dropped from defaults.
+- **SMT = too strict** (4 trades); off by default.
+
+Verdict: promising, not proven. PF ~2 on QQQ, +0.5R/trade is a tradeable edge,
+but small sample (23–27 trades), single ~60-day regime, proxy not NQ, and SPY's
+1.3 shows instrument/regime sensitivity. Forward-test required.
+
+v5 defaults set from this: displacement OFF, SMT OFF, R:R 2.5, keep swingLen 4 +
+strict anchor + HTF.
