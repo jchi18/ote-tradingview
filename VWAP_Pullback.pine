@@ -127,13 +127,18 @@ var label lbS = na
 var label lbT = na
 var int   startBar = 0
 
-showNow = setupActive and showLevels
+// Draw the levels whenever there's a 1H trend (not only on a live fill setup), so
+// you can always SEE where the entry/stop/target would be. The guidance box below
+// stays the authority on WHEN to actually place the order.
+drawDir = biasBull ? 1 : (biasBear ? -1 : 0)
+showNow = showLevels and drawDir != 0
 if showNow
+    dirLong = drawDir == 1
     eY   = entry
-    sY   = isLong ? longStop : shortStop
-    tY   = isLong ? longTgt  : shortTgt
-    qty  = isLong ? longQty  : shortQty
-    side = isLong ? "BUY LIMIT" : "SELL LIMIT"
+    sY   = dirLong ? longStop : shortStop
+    tY   = dirLong ? longTgt  : shortTgt
+    qty  = dirLong ? longQty  : shortQty
+    side = dirLong ? "BUY LIMIT" : "SELL LIMIT"
     if na(lnE)
         startBar := bar_index
         lnE := line.new(startBar, eY, bar_index, eY, color = color.orange, width = 2, extend = extend.right)
