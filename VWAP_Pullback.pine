@@ -36,6 +36,12 @@ showLevels = input.bool(true, "Entry / stop / target lines", group = grpV)
 showPanel  = input.bool(true, "Info panel",                  group = grpV)
 showVwap   = input.bool(true, "VWAP line",                   group = grpV)
 
+grpVP = "Volume levels (context only)"
+showVP     = input.bool(false, "Volume POC + high-volume zones", group = grpVP, tooltip = "CONTEXT ONLY — these do NOT change the entry, stop, or target. Approximate volume profile over the lookback: the fuchsia POC is the most-traded price, gray dotted lines are other high-volume nodes. They act as magnets / support-resistance to be aware of around your VWAP limit. Backtested (Round 9): trading these directly has no edge — use them as awareness, not signals.")
+vpLookback = input.int(120, "Lookback (bars)",                  minval = 10, maxval = 1000, group = grpVP)
+vpBins     = input.int(24,  "Price bins (resolution)",          minval = 5,  maxval = 100,  group = grpVP)
+vpZones    = input.int(3,   "High-volume zones (incl. POC)",    minval = 1,  maxval = 6,    group = grpVP)
+
 // ───────────────────────── core calcs ─────────────────────────
 // VWAP anchored to the RTH session (what the strategy was backtested on), computed
 // manually so it resets at 09:30 ET and ignores overnight volume — unlike ta.vwap,
@@ -184,6 +190,54 @@ if showPanel and barstate.islast
     f_row(panel, 4, "Stop",      sActive ? str.tostring(s, format.mintick) : "—", color.red)
     f_row(panel, 5, "Target",    sActive ? str.tostring(t, format.mintick) : "—", color.green)
     f_row(panel, 6, "Size (ct)", sActive ? str.tostring(q) : "—", color.white)
+
+// ── Volume levels (CONTEXT ONLY — does not affect entry/stop/target) ──
+// Pine has no native volume-by-price, so we approximate it: split the recent price
+// range into bins, add each bar's volume to the bin its typical price falls in, then
+// mark the busiest bins. Busiest of all = POC (fuchsia). The rest = high-volume nodes
+// (gray dotted). Drawn once on the last bar and refreshed as new bars arrive.
+vpHi = ta.highest(high, vpLookback)
+vpLo = ta.lowest(low,  vpLookback)
+var array<line>  vpLines  = array.new<line>()
+var array<label> vpLabels = array.new<label>()
+
+if showVP and barstate.islast and vpHi > vpLo
+    for i = 0 to array.size(vpLines) - 1
+        line.delete(array.get(vpLines, i))
+    for i = 0 to array.size(vpLabels) - 1
+        label.delete(array.get(vpLabels, i))
+    array.clear(vpLines)
+    array.clear(vpLabels)
+    binSize = (vpHi - vpLo) / vpBins
+    vols = array.new<float>(vpBins, 0.0)
+    for k = 0 to vpLookback - 1
+        if not na(high[k]) and not na(low[k])
+            tp   = (high[k] + low[k] + close[k]) / 3.0
+            bvol = na(volume[k]) ? 0.0 : volume[k]
+            bi   = int(math.floor((tp - vpLo) / binSize))
+            bi   := math.max(0, math.min(vpBins - 1, bi))
+            array.set(vols, bi, array.get(vols, bi) + bvol)
+    leftX = bar_index - vpLookback
+    drawn = 0
+    while drawn < vpZones
+        bestIdx = -1
+        bestVol = 0.0
+        for b = 0 to vpBins - 1
+            cur = array.get(vols, b)
+            if cur > bestVol
+                bestVol := cur
+                bestIdx := b
+        if bestIdx < 0
+            break
+        price = vpLo + (bestIdx + 0.5) * binSize
+        isPoc = drawn == 0
+        col   = isPoc ? color.fuchsia : color.gray
+        ln = line.new(leftX, price, bar_index, price, color = color.new(col, isPoc ? 0 : 30), width = 1, style = isPoc ? line.style_solid : line.style_dotted, extend = extend.right)
+        lb = label.new(bar_index, price, (isPoc ? "POC " : "HVN ") + str.tostring(price, format.mintick), style = label.style_label_left, color = color.new(col, isPoc ? 0 : 20), textcolor = color.white, size = size.tiny)
+        array.push(vpLines, ln)
+        array.push(vpLabels, lb)
+        array.set(vols, bestIdx, -1.0)
+        drawn += 1
 
 // ───────────────────────── alerts ─────────────────────────
 alertcondition(freshLong,  "VWAP long limit",  "VWAP Pullback: BULL bias — rest a BUY-LIMIT at session VWAP. Stop 0.5xATR below, target RR.")
