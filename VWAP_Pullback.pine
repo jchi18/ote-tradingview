@@ -16,6 +16,9 @@ emaFastLen = input.int(50,  "HTF fast EMA",  minval = 1,        group = grpS)
 emaSlowLen = input.int(100, "HTF slow EMA",  minval = 1,        group = grpS, tooltip = "Bias is BULL when fast EMA > slow EMA, BEAR when fast < slow. Backtest 'dual' filter.")
 sessTimes  = input.session("0930-1100", "Entry window (killzone)", group = grpS)
 sessTz     = input.string("America/New_York", "Session timezone", group = grpS)
+
+grpW = "VWAP anchor"
+vwapSess = input.session("0930-1600", "VWAP session (anchor + accumulate)", group = grpW, tooltip = "VWAP RESETS at the start of this session and only accumulates bars inside it. Default = RTH 09:30–16:00 ET, which is what the strategy was backtested on. This is why it can differ from TradingView's built-in VWAP, which on a futures chart anchors to the 18:00 Globex open and includes overnight volume.")
 oncePerDay = input.bool(true, "Only the first setup per session", group = grpS, tooltip = "Matches the ~1 trade/session discipline. Suppresses later same-day signals.")
 
 grpR = "Risk / Targets"
@@ -34,7 +37,27 @@ showPanel  = input.bool(true, "Info panel",                  group = grpV)
 showVwap   = input.bool(true, "VWAP line",                   group = grpV)
 
 // ───────────────────────── core calcs ─────────────────────────
-vwap = ta.vwap(hlc3)
+// VWAP anchored to the RTH session (what the strategy was backtested on), computed
+// manually so it resets at 09:30 ET and ignores overnight volume — unlike ta.vwap,
+// which on a futures chart anchors to the 18:00 Globex open.
+inVwapSess = not na(time(timeframe.period, vwapSess, sessTz))
+newVwap    = inVwapSess and not inVwapSess[1]
+var float cumPV = 0.0
+var float cumV  = 0.0
+var float cumTP = 0.0
+var int   cumN  = 0
+if newVwap
+    cumPV := 0.0
+    cumV  := 0.0
+    cumTP := 0.0
+    cumN  := 0
+if inVwapSess
+    v = na(volume) ? 0.0 : volume
+    cumPV += hlc3 * v
+    cumV  += v
+    cumTP += hlc3
+    cumN  += 1
+vwap = cumV > 0 ? cumPV / cumV : (cumN > 0 ? cumTP / cumN : hlc3)   // volume VWAP; TWAP fallback if the symbol has no volume
 atr  = ta.atr(atrLen)
 
 emaFast = request.security(syminfo.tickerid, htfRes, ta.ema(close, emaFastLen), barmerge.gaps_off, barmerge.lookahead_off)
@@ -77,32 +100,59 @@ setupActive = (longCond or shortCond) and (not oncePerDay or freshLong or freshS
 isLong = longCond and biasBull
 
 // ───────────────────────── plots ─────────────────────────
-plot(showVwap ? vwap : na, "VWAP", color.new(color.blue, 0), 2)
-
-pEntry = showLevels and setupActive ? entry : na
-pStop  = showLevels and setupActive ? (isLong ? longStop : shortStop) : na
-pTgt   = showLevels and setupActive ? (isLong ? longTgt  : shortTgt)  : na
-plot(pEntry, "Limit entry", color.new(color.orange, 0), 2, plot.style_linebr)
-plot(pStop,  "Stop",        color.new(color.red, 0),    1, plot.style_linebr)
-plot(pTgt,   "Target",      color.new(color.green, 0),  1, plot.style_linebr)
+plot(showVwap ? vwap : na, "VWAP (live limit level)", color.new(color.blue, 0), 2)
 
 // fresh-setup markers
 plotshape(freshLong,  "Fresh LONG",  shape.triangleup,   location.belowbar, color.new(color.teal, 0), size = size.small)
 plotshape(freshShort, "Fresh SHORT", shape.triangledown, location.abovebar, color.new(color.maroon, 0), size = size.small)
 
-// label on the fresh trigger with the full plan
-if freshLong
-    qty = longQty
-    label.new(bar_index, low, text = "⬆ BUY-LIMIT @ " + str.tostring(entry, format.mintick) +
-         "\nSL " + str.tostring(longStop, format.mintick) + "  TP " + str.tostring(longTgt, format.mintick) +
-         "\n" + str.tostring(qty) + " ct · risk $" + str.tostring(riskDollars, "#") ,
-         style = label.style_label_up, color = color.new(color.teal, 10), textcolor = color.white, size = size.normal)
-if freshShort
-    qty = shortQty
-    label.new(bar_index, high, text = "⬇ SELL-LIMIT @ " + str.tostring(entry, format.mintick) +
-         "\nSL " + str.tostring(shortStop, format.mintick) + "  TP " + str.tostring(shortTgt, format.mintick) +
-         "\n" + str.tostring(qty) + " ct · risk $" + str.tostring(riskDollars, "#") ,
-         style = label.style_label_down, color = color.new(color.maroon, 10), textcolor = color.white, size = size.normal)
+// ── Frozen order levels ── three clear horizontal lines + price tags, locked in
+// at the bar the setup forms, so you can see EXACTLY where to rest the limit and
+// place the stop/target. Orange = limit entry, red dashed = stop, green dashed = target.
+var line  lnE = na
+var line  lnS = na
+var line  lnT = na
+var label lbE = na
+var label lbS = na
+var label lbT = na
+var int   fDir = 0
+
+clearLevels = newSession or ((freshLong or freshShort) and showLevels)
+if clearLevels
+    line.delete(lnE)
+    line.delete(lnS)
+    line.delete(lnT)
+    label.delete(lbE)
+    label.delete(lbS)
+    label.delete(lbT)
+    lnE := na
+    lnS := na
+    lnT := na
+    lbE := na
+    lbS := na
+    lbT := na
+    if newSession
+        fDir := 0
+
+if (freshLong or freshShort) and showLevels
+    fDir := freshLong ? 1 : -1
+    fE = entry
+    fS = freshLong ? longStop : shortStop
+    fT = freshLong ? longTgt  : shortTgt
+    qty  = freshLong ? longQty : shortQty
+    side = freshLong ? "BUY LIMIT" : "SELL LIMIT"
+    lnE := line.new(bar_index, fE, bar_index + 1, fE, color = color.orange, width = 2, extend = extend.right)
+    lnS := line.new(bar_index, fS, bar_index + 1, fS, color = color.red,   width = 1, style = line.style_dashed, extend = extend.right)
+    lnT := line.new(bar_index, fT, bar_index + 1, fT, color = color.green, width = 1, style = line.style_dashed, extend = extend.right)
+    lbE := label.new(bar_index, fE, side + "  " + str.tostring(fE, format.mintick) + "   (" + str.tostring(qty) + " ct)", style = label.style_label_left, color = color.new(color.orange, 0), textcolor = color.white, size = size.small)
+    lbS := label.new(bar_index, fS, "SL  " + str.tostring(fS, format.mintick), style = label.style_label_left, color = color.new(color.red, 0),   textcolor = color.white, size = size.small)
+    lbT := label.new(bar_index, fT, "TP  " + str.tostring(fT, format.mintick), style = label.style_label_left, color = color.new(color.green, 0), textcolor = color.white, size = size.small)
+
+// keep the price tags pinned to the right edge while the levels are live
+if fDir != 0 and not na(lbE)
+    label.set_x(lbE, bar_index)
+    label.set_x(lbS, bar_index)
+    label.set_x(lbT, bar_index)
 
 // ───────────────────────── info panel ─────────────────────────
 var table panel = table.new(position.top_right, 2, 7, border_width = 1)
