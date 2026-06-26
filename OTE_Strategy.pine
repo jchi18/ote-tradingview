@@ -17,7 +17,7 @@
 // commission_type to strategy.commission.percent and set commission ~0.02.
 // NOTE: initial_capital and commission_value MUST be constants here (Pine rule).
 // Edit these two numbers directly: capital ($) and $ commission per contract.
-strategy("OTE Strategy (Confluence)", "OTE-S", overlay = true,
+strategy("OTE Strategy (Confluence) v2", "OTE-S v2", overlay = true,
      initial_capital = 5000, default_qty_type = strategy.fixed, default_qty_value = 1,
      pyramiding = 0, calc_on_order_fills = false, process_orders_on_close = false,
      commission_type = strategy.commission.cash_per_contract, commission_value = 1.0,
@@ -282,31 +282,28 @@ f_qty(entryP, slP) =>
     q = qtyMode == "Fixed contracts" ? fixedQty : riskQty
     q
 
-if inWindow and Larmed
-    if close < LlegStart            // origin broken before fill -> cancel
+// LONG: while armed and flat, cancel if origin lost, else enter at MARKET the
+// moment price trades into the OTE entry level. Bracket exit manages stop/target.
+if inWindow and Larmed and strategy.position_size == 0
+    if close < LlegStart            // origin broken before entry -> cancel
         Larmed := false
-        strategy.cancel("L")
-    else
-        qty = f_qty(Lentry, Lsl)
-        if not na(qty) and qty > 0
-            strategy.entry("L", strategy.long, qty = qty, limit = Lentry)
-            strategy.exit("L-x", "L", stop = Lsl, limit = Ltp)
+    else if low <= Lentry           // price tagged the OTE zone -> take the trade
+        q = f_qty(Lentry, Lsl)
+        if not na(q) and q > 0
+            strategy.entry("L", strategy.long, qty = q)
+            strategy.exit("L-x", from_entry = "L", stop = Lsl, limit = Ltp)
+        Larmed := false
 
-if inWindow and Sarmed
+// SHORT: mirror image.
+if inWindow and Sarmed and strategy.position_size == 0
     if close > SlegStart
         Sarmed := false
-        strategy.cancel("S")
-    else
-        qty = f_qty(Sentry, Ssl)
-        if not na(qty) and qty > 0
-            strategy.entry("S", strategy.short, qty = qty, limit = Sentry)
-            strategy.exit("S-x", "S", stop = Ssl, limit = Stp)
-
-// disarm once the position is open (exit bracket already manages it)
-if strategy.position_size > 0
-    Larmed := false
-if strategy.position_size < 0
-    Sarmed := false
+    else if high >= Sentry
+        q = f_qty(Sentry, Ssl)
+        if not na(q) and q > 0
+            strategy.entry("S", strategy.short, qty = q)
+            strategy.exit("S-x", from_entry = "S", stop = Ssl, limit = Stp)
+        Sarmed := false
 
 // ---------------------------------------------------------------------------
 //  PLOTS — entry / sl / tp of the active setups
