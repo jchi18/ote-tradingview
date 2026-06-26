@@ -15,7 +15,7 @@
 //    swingLen 4, HTF bias 60m. See the swingLen tooltip for the per-TF map.
 //    On LTF, turn ON "Require active killzone" to skip dead, choppy sessions.
 // =============================================================================
-indicator("OTE — Optimal Trade Entry (Confluence) v4", "OTE v4", overlay = true,
+indicator("OTE — Optimal Trade Entry (Confluence) v5", "OTE v5", overlay = true,
      max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
 // ---------------------------------------------------------------------------
@@ -38,8 +38,8 @@ showEq     = input.bool(false, "Show 0.5 equilibrium line", group = grpF)
 grpC  = "Confluence gates (require for A+ signal)"
 strictAnchor = input.bool(true, "Strict ICT anchor (leg must be sweep → MSS)", group = grpC,
      tooltip = "Only draw a zone when the leg ran liquidity at its origin AND broke structure at its extreme — i.e. anchored from the sweep low to the MSS high (longs), sweep high to MSS low (shorts). This is the textbook OTE anchor.")
-reqDisp    = input.bool(true,  "Require displacement (strong impulse leg)", group = grpC,
-     tooltip = "The leg must expand at least N×ATR — filters weak, drifting legs that make poor OTEs.")
+reqDisp    = input.bool(false, "Require displacement (strong impulse leg)", group = grpC,
+     tooltip = "Backtest showed strict-anchor legs already clear this on 5m, so it's off by default. Turn on to filter weaker, drifting legs.")
 dispMult   = input.float(1.5, "Displacement min (× ATR)", minval = 0.1, step = 0.1, group = grpC)
 reqOB      = input.bool(false, "Require Order Block inside OTE zone", group = grpC)
 reqMSS     = input.bool(true,  "Require Market Structure Shift", group = grpC)
