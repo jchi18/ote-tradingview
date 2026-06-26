@@ -1,0 +1,202 @@
+//@version=5
+// =============================================================================
+// VWAP + Volume Levels — Beginner-Friendly (MNQ / NQ)
+// -----------------------------------------------------------------------------
+// What it does, in plain words:
+//   • Draws the session VWAP (the volume-weighted average price = "fair value").
+//   • Tells you the bias: price ABOVE VWAP = bullish, BELOW = bearish.
+//   • Optional standard-deviation bands around VWAP (stretch zones).
+//   • Marks high-probability LONG / SHORT setups when price pulls back to VWAP
+//     and rejects it in the direction of the trend.
+//   • Optional volume "profile-style" levels: the POC (most-traded price) and a
+//     few high-volume nodes that tend to act as support / resistance.
+//   • Alerts for the long setup, the short setup, and VWAP crosses.
+//
+// Design choices:
+//   • NON-REPAINTING. Signals only fire on a CONFIRMED (closed) candle, and
+//     nothing uses future data or higher-timeframe lookahead.
+//   • Everything has an on/off switch so you can keep the chart clean.
+//   • Heavily commented so you can read and adjust it yourself.
+//
+// How to use: add to an MNQ or NQ chart (5-minute is a good start). Watch for a
+// green LONG triangle below a bar or a red SHORT triangle above a bar. The VWAP
+// is your anchor; the bands and volume levels are context.
+// =============================================================================
+indicator("VWAP + Volume Levels — Beginner", "VWAP+VolLvls", overlay = true,
+     max_lines_count = 500, max_labels_count = 500)
+
+// ================================ INPUTS =====================================
+// ---- VWAP ----
+grpV = "VWAP"
+useSession  = input.bool(true, "Anchor VWAP to a session (recommended on futures)", group = grpV, tooltip = "ON  = VWAP resets at the session start below and ignores the overnight tape (accurate for the day session).\nOFF = VWAP runs continuously from the first visible bar.")
+vwapSession = input.session("0930-1600", "VWAP session (day session / RTH)", group = grpV)
+vwapTz      = input.string("America/New_York", "Session timezone", group = grpV)
+src         = input.source(hlc3, "VWAP source", group = grpV, tooltip = "hlc3 = (high+low+close)/3, the standard VWAP price.")
+
+// ---- Bands ----
+grpB = "VWAP bands"
+showBands = input.bool(true, "Show standard-deviation bands", group = grpB)
+mult1     = input.float(1.0, "Inner band  (× stdev)", step = 0.5, minval = 0.1, group = grpB)
+mult2     = input.float(2.0, "Outer band  (× stdev)", step = 0.5, minval = 0.1, group = grpB)
+
+// ---- Signals ----
+grpS = "Setups (signals)"
+showSignals = input.bool(true, "Show long / short setups", group = grpS)
+slopeLen    = input.int(5, "VWAP slope lookback (bars)", minval = 1, group = grpS, tooltip = "VWAP must be higher (or lower) than it was this many bars ago to count as sloping up (or down).")
+nearPct     = input.float(0.10, "Pullback distance to VWAP (% of price)", step = 0.05, minval = 0.0, group = grpS, tooltip = "How close the candle must trade to VWAP to count as a pullback. 0.10 = within 0.10% of price.")
+
+// ---- Volume profile-style levels ----
+grpP = "Volume levels (profile-style)"
+showVP     = input.bool(false, "Show volume POC + high-volume zones", group = grpP, tooltip = "Approximate volume profile over the lookback window. OFF by default to keep the chart clean.")
+vpLookback = input.int(120, "Lookback (bars)", minval = 10, maxval = 1000, group = grpP)
+vpBins     = input.int(24,  "Price bins (resolution)", minval = 5, maxval = 100, group = grpP)
+vpZones    = input.int(3,   "High-volume zones to mark (incl. POC)", minval = 1, maxval = 6, group = grpP)
+
+// ---- Display ----
+grpD = "Display"
+showBias = input.bool(true, "Show bias label (top-right)", group = grpD)
+
+// =========================== 1) SESSION VWAP =================================
+// We build VWAP by hand so it can RESET at the session open (accurate on 24h
+// futures). It accumulates price×volume and volume from the session start, then
+// divides. We also accumulate price²×volume so we can compute the band width.
+inSess  = useSession ? not na(time(timeframe.period, vwapSession, vwapTz)) : true
+newSess = inSess and not inSess[1]
+
+var float cumPV  = na   // running sum of price × volume
+var float cumVol = na   // running sum of volume
+var float cumPV2 = na   // running sum of price² × volume (for stdev)
+
+// reset the running totals at each new session (or on the very first bar)
+if newSess or na(cumVol)
+    cumPV  := 0.0
+    cumVol := 0.0
+    cumPV2 := 0.0
+
+float vol = na(volume) ? 0.0 : volume   // some symbols report no volume; treat as 0
+if inSess
+    cumPV  += src * vol
+    cumVol += vol
+    cumPV2 += src * src * vol
+
+// VWAP = volume-weighted mean. If there is no volume yet, fall back to price.
+vwap = cumVol > 0 ? cumPV / cumVol : src
+
+// Volume-weighted standard deviation, used for the bands.
+// variance = E[x²] − (E[x])² , clamped at 0 so rounding can't make it negative.
+variance = cumVol > 0 ? math.max(cumPV2 / cumVol - vwap * vwap, 0.0) : 0.0
+stdev    = math.sqrt(variance)
+
+// =============================== 2) BIAS ====================================
+bull = close > vwap   // price above fair value  -> bullish lean
+bear = close < vwap   // price below fair value  -> bearish lean
+
+// =========================== 3) PLOT VWAP + BANDS ===========================
+plot(vwap, "VWAP", color = color.blue, linewidth = 2)
+
+upper1 = vwap + mult1 * stdev
+lower1 = vwap - mult1 * stdev
+upper2 = vwap + mult2 * stdev
+lower2 = vwap - mult2 * stdev
+
+pu1 = plot(showBands ? upper1 : na, "Upper 1", color = color.new(color.gray, 50))
+pl1 = plot(showBands ? lower1 : na, "Lower 1", color = color.new(color.gray, 50))
+plot(showBands ? upper2 : na, "Upper 2", color = color.new(color.gray, 70))
+plot(showBands ? lower2 : na, "Lower 2", color = color.new(color.gray, 70))
+fill(pu1, pl1, showBands ? color.new(color.blue, 92) : na, title = "Inner band fill")
+
+// ============================ 4) VWAP SLOPE =================================
+slopeUp   = vwap > vwap[slopeLen]   // VWAP rising  = trend up
+slopeDown = vwap < vwap[slopeLen]   // VWAP falling = trend down
+
+// ================ 5) PULLBACK + REJECTION SETUPS (no repaint) ===============
+// "Near VWAP" = the candle traded within nearPct% of the VWAP line.
+nearDist    = vwap * nearPct / 100.0
+touchedVwap = low <= vwap + nearDist and high >= vwap - nearDist
+
+// LONG  : uptrend + above VWAP + pulled back to VWAP + rejected and closed UP (green candle).
+longRaw  = bull and slopeUp   and touchedVwap and close > vwap and close > open
+// SHORT : downtrend + below VWAP + pulled back to VWAP + rejected and closed DOWN (red candle).
+shortRaw = bear and slopeDown and touchedVwap and close < vwap and close < open
+
+// barstate.isconfirmed is TRUE only when a candle has CLOSED. Requiring it means
+// signals never appear (or disappear) mid-candle = no repainting.
+confirmed = barstate.isconfirmed
+longSig   = showSignals and longRaw  and confirmed
+shortSig  = showSignals and shortRaw and confirmed
+
+plotshape(longSig,  "Long setup",  shape.triangleup,   location.belowbar, color = color.new(color.green, 0), size = size.small, text = "LONG")
+plotshape(shortSig, "Short setup", shape.triangledown, location.abovebar, color = color.new(color.red, 0),   size = size.small, text = "SHORT")
+
+// VWAP crosses (also confirmed-only).
+crossUp = ta.crossover(close, vwap)  and confirmed
+crossDn = ta.crossunder(close, vwap) and confirmed
+
+// ================== 6) VOLUME PROFILE-STYLE LEVELS (optional) ===============
+// Pine has no built-in volume-by-price, so we approximate it: split the recent
+// price range into bins, add each bar's volume to the bin its typical price
+// falls in, then mark the busiest bins. The busiest of all = POC (point of
+// control). These tend to act as magnets / support-resistance.
+// Drawn once, on the latest bar, and refreshed as new bars arrive.
+hh = ta.highest(high, vpLookback)
+ll = ta.lowest(low,  vpLookback)
+
+var line[]  vpLines  = array.new_line()
+var label[] vpLabels = array.new_label()
+
+if showVP and barstate.islast and hh > ll
+    // wipe the previous drawing so we don't stack duplicates
+    for i = 0 to array.size(vpLines) - 1
+        line.delete(array.get(vpLines, i))
+    for i = 0 to array.size(vpLabels) - 1
+        label.delete(array.get(vpLabels, i))
+    array.clear(vpLines)
+    array.clear(vpLabels)
+
+    binSize = (hh - ll) / vpBins
+    vols = array.new_float(vpBins, 0.0)
+
+    // walk back over the lookback window, dropping each bar's volume into a bin
+    for k = 0 to vpLookback - 1
+        if not na(high[k]) and not na(low[k])
+            tp   = (high[k] + low[k] + close[k]) / 3.0
+            bvol = na(volume[k]) ? 0.0 : volume[k]
+            bi   = int(math.floor((tp - ll) / binSize))
+            bi   := math.max(0, math.min(vpBins - 1, bi))
+            array.set(vols, bi, array.get(vols, bi) + bvol)
+
+    // mark the top N busiest bins; the very busiest is the POC
+    leftX = bar_index - vpLookback
+    drawn = 0
+    while drawn < vpZones
+        bestIdx = -1
+        bestVol = 0.0
+        for b = 0 to vpBins - 1
+            v = array.get(vols, b)
+            if v > bestVol
+                bestVol := v
+                bestIdx := b
+        if bestIdx < 0
+            break
+        price  = ll + (bestIdx + 0.5) * binSize
+        isPoc  = drawn == 0
+        col    = isPoc ? color.orange : color.purple
+        ln = line.new(leftX, price, bar_index, price, color = color.new(col, isPoc ? 0 : 30), width = isPoc ? 2 : 1, style = isPoc ? line.style_solid : line.style_dotted, extend = extend.right)
+        lb = label.new(bar_index, price, (isPoc ? "POC " : "HVN ") + str.tostring(price, format.mintick), style = label.style_label_left, color = color.new(col, isPoc ? 0 : 20), textcolor = color.white, size = isPoc ? size.small : size.tiny)
+        array.push(vpLines,  ln)
+        array.push(vpLabels, lb)
+        array.set(vols, bestIdx, -1.0)   // remove it so the next loop finds the next-busiest
+        drawn += 1
+
+// ============================ BIAS LABEL ====================================
+var table biasTbl = table.new(position.top_right, 1, 1, border_width = 1)
+if showBias and barstate.islast
+    biasTxt = bull ? "BIAS: BULLISH ▲" : bear ? "BIAS: BEARISH ▼" : "BIAS: FLAT"
+    biasBg  = bull ? color.new(color.green, 0) : bear ? color.new(color.red, 0) : color.gray
+    table.cell(biasTbl, 0, 0, biasTxt, text_color = color.white, bgcolor = biasBg, text_size = size.normal)
+
+// =============================== ALERTS =====================================
+alertcondition(longSig,  "Long VWAP rejection",       "VWAP rejection LONG: price pulled back to VWAP in an uptrend and closed back up.")
+alertcondition(shortSig, "Short VWAP rejection",      "VWAP rejection SHORT: price pulled back to VWAP in a downtrend and closed back down.")
+alertcondition(crossUp,  "Price crossed above VWAP",  "Price crossed ABOVE VWAP — bias flipped bullish.")
+alertcondition(crossDn,  "Price crossed below VWAP",  "Price crossed BELOW VWAP — bias flipped bearish.")
