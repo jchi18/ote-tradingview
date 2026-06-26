@@ -1,0 +1,418 @@
+//@version=6
+// =============================================================================
+//  OTE — Optimal Trade Entry (Confluence Edition)
+//  ICT-style Optimal Trade Entry with the highest-weight confluences:
+//    • Auto leg detection from confirmed swing pivots
+//    • Market Structure Shift / Break of Structure (MSS/BOS)
+//    • Liquidity sweep (stop hunt at the leg origin)
+//    • OTE Fib zone 0.62 / 0.705 (sweet spot) / 0.79  + 0.5 equilibrium
+//    • Premium / Discount filter (only long in discount, short in premium)
+//    • Fair Value Gap (FVG) located inside the OTE zone
+//    • Killzone session filter (London / New York)
+//    • Confluence score gate + TP projections (-0.27 / -0.62 / -1.0) + alerts
+//
+//  Defaults tuned for LOW timeframes (1m-15m scalping):
+//    swingLen 4, HTF bias 60m. See the swingLen tooltip for the per-TF map.
+//    On LTF, turn ON "Require active killzone" to skip dead, choppy sessions.
+// =============================================================================
+indicator("OTE — Optimal Trade Entry (Confluence)", "OTE", overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ---------------------------------------------------------------------------
+//  INPUTS
+// ---------------------------------------------------------------------------
+grpS  = "Structure / Swings"
+swingLen   = input.int(4, "Swing pivot length", minval = 2, maxval = 50, group = grpS,
+     tooltip = "Bars left/right to confirm a pivot. Lower = faster swings (good for LTF/scalping). 1m: 3 | 5m: 4 | 15m: 5 | 1H+: 7-10.")
+useBody    = input.bool(false, "Use candle bodies for sweep/MSS", group = grpS,
+     tooltip = "If on, structure breaks need a close (body) beyond the level instead of a wick.")
+
+grpF  = "OTE Fib zone"
+oteHi      = input.float(0.62, "OTE start (shallow)", step = 0.005, group = grpF)
+oteSweet   = input.float(0.705, "OTE sweet spot",     step = 0.005, group = grpF)
+oteLo      = input.float(0.79, "OTE end (deep)",      step = 0.005, group = grpF)
+showEq     = input.bool(true, "Show 0.5 equilibrium", group = grpF)
+showTargets= input.bool(true, "Show TP projections (-0.27/-0.62/-1.0)", group = grpF)
+
+grpC  = "Confluence gates (require for A+ signal)"
+strictAnchor = input.bool(true, "Strict ICT anchor (leg must be sweep → MSS)", group = grpC,
+     tooltip = "Only draw a zone when the leg ran liquidity at its origin AND broke structure at its extreme — i.e. anchored from the sweep low to the MSS high (longs), sweep high to MSS low (shorts). This is the textbook OTE anchor.")
+reqDisp    = input.bool(true,  "Require displacement (strong impulse leg)", group = grpC,
+     tooltip = "The leg must expand at least N×ATR — filters weak, drifting legs that make poor OTEs.")
+dispMult   = input.float(1.5, "Displacement min (× ATR)", minval = 0.1, step = 0.1, group = grpC)
+reqOB      = input.bool(false, "Require Order Block inside OTE zone", group = grpC)
+reqMSS     = input.bool(true,  "Require Market Structure Shift", group = grpC)
+reqSweep   = input.bool(true,  "Require liquidity sweep at origin", group = grpC)
+reqDiscount= input.bool(true,  "Require Discount(long)/Premium(short)", group = grpC)
+reqFVG     = input.bool(false, "Require FVG inside OTE zone", group = grpC)
+reqRB      = input.bool(false, "Require Rejection Block inside OTE zone", group = grpC,
+     tooltip = "A wick-dominant candle that rejected the zone (lower wick for longs, upper wick for shorts).")
+reqKZ      = input.bool(false, "Require active killzone", group = grpC)
+minScore   = input.int(3, "Min confluence score for signal", minval = 1, maxval = 7, group = grpC)
+
+grpK  = "Killzones (exchange time of the chart)"
+kzLondon   = input.session("0200-0500", "London killzone", group = grpK)
+kzNY       = input.session("0700-1000", "New York killzone", group = grpK)
+
+grpM  = "SMT Divergence"
+useSMT     = input.bool(false, "Require SMT divergence", group = grpM,
+     tooltip = "Compare a positively-correlated instrument. Bullish SMT = the primary sweeps a prior low but the correlated symbol holds a HIGHER low (the sweep was manipulation). Bearish SMT = primary makes a higher high while the correlate makes a lower high.")
+smtSym     = input.symbol("CME_MINI:NQ1!", "Correlated symbol", group = grpM,
+     tooltip = "Use a POSITIVELY-correlated instrument: ES↔NQ, BTC↔ETH, EURUSD↔GBPUSD. (Not an inverse like DXY.)")
+
+grpH  = "Higher-Timeframe (HTF) Bias"
+useHTF     = input.bool(true, "Require HTF bias agreement", group = grpH,
+     tooltip = "Only allow LONGs when HTF is bullish and SHORTs when HTF is bearish.")
+htfTF      = input.timeframe("60", "HTF timeframe", group = grpH,
+     tooltip = "Pick a TF ~4-6x your chart TF. 1m->15m | 3m->15m/30m | 5m->30m/1H | 15m->1H/4H.")
+htfMethod  = input.string("Price vs EMA", "Bias method", options = ["Price vs EMA", "EMA cross"], group = grpH)
+htfEmaF    = input.int(21, "Fast / bias EMA length", minval = 1, group = grpH)
+htfEmaS    = input.int(50, "Slow EMA length", minval = 1, group = grpH)
+htfShowBg  = input.bool(false, "Tint background with HTF bias", group = grpH)
+
+grpV  = "Visuals"
+colBull    = input.color(color.new(color.teal, 0),  "Bull color", group = grpV)
+colBear    = input.color(color.new(color.red, 0),   "Bear color", group = grpV)
+colZone    = input.color(color.new(color.teal, 80), "Bull zone fill", group = grpV)
+colZoneB   = input.color(color.new(color.red, 80),  "Bear zone fill", group = grpV)
+extendBars = input.int(30, "Extend zone forward (bars)", minval = 5, group = grpV)
+showLabels = input.bool(true, "Show info labels", group = grpV)
+
+// ---------------------------------------------------------------------------
+//  KILLZONE STATE
+// ---------------------------------------------------------------------------
+inSession(sess) => not na(time(timeframe.period, sess))
+kzActive = inSession(kzLondon) or inSession(kzNY)
+atr = ta.atr(14)
+
+// ---------------------------------------------------------------------------
+//  HIGHER-TIMEFRAME BIAS
+//  Pulled non-repainting (lookahead off, confirmed HTF bar via [1]).
+// ---------------------------------------------------------------------------
+[hClose, hFast, hSlow] = request.security(syminfo.tickerid, htfTF,
+     [close, ta.ema(close, htfEmaF), ta.ema(close, htfEmaS)],
+     lookahead = barmerge.lookahead_off)
+htfBull = htfMethod == "EMA cross" ? hFast > hSlow : hClose > hSlow
+htfBear = htfMethod == "EMA cross" ? hFast < hSlow : hClose < hSlow
+
+// SMT — correlated instrument lows/highs (aligned to chart bars)
+[smtL, smtH] = request.security(smtSym, timeframe.period, [low, high],
+     lookahead = barmerge.lookahead_off)
+bgcolor(htfShowBg and useHTF ? (htfBull ? color.new(color.teal, 92) : htfBear ? color.new(color.red, 92) : na) : na)
+
+// ---------------------------------------------------------------------------
+//  SWING PIVOTS  (confirmed swingLen bars back)
+// ---------------------------------------------------------------------------
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow (low,  swingLen, swingLen)
+
+var float lastPH    = na   // most recent confirmed swing high price
+var int   lastPHbar = na
+var float prevPH    = na   // the one before it (for sweep reference)
+var float lastPL    = na
+var int   lastPLbar = na
+var float prevPL    = na
+// correlated-symbol values captured at the primary's pivot bars (for SMT)
+var float lastCorrPH = na
+var float prevCorrPH = na
+var float lastCorrPL = na
+var float prevCorrPL = na
+
+if not na(ph)
+    prevPH    := lastPH
+    lastPH    := ph
+    lastPHbar := bar_index - swingLen
+    prevCorrPH := lastCorrPH
+    lastCorrPH := smtH[swingLen]
+if not na(pl)
+    prevPL    := lastPL
+    lastPL    := pl
+    lastPLbar := bar_index - swingLen
+    prevCorrPL := lastCorrPL
+    lastCorrPL := smtL[swingLen]
+
+// ---------------------------------------------------------------------------
+//  FAIR VALUE GAP detection (3-candle imbalance)
+//  Keep the most recent bullish & bearish FVG bounds.
+// ---------------------------------------------------------------------------
+bullFVG = low > high[2]
+bearFVG = high < low[2]
+var float bFVGtop = na   // bullish gap (support)
+var float bFVGbot = na
+var float sFVGtop = na   // bearish gap (resistance)
+var float sFVGbot = na
+if bullFVG
+    bFVGbot := high[2]
+    bFVGtop := low
+if bearFVG
+    sFVGtop := low[2]
+    sFVGbot := high
+
+// ---------------------------------------------------------------------------
+//  REJECTION BLOCKS — wick-dominant candles that reject a level.
+//  Bullish RB: large lower wick (rejection of lows). Zone = [low, body low].
+//  Bearish RB: large upper wick (rejection of highs). Zone = [body high, high].
+// ---------------------------------------------------------------------------
+_bodyHi = math.max(open, close)
+_bodyLo = math.min(open, close)
+_body   = _bodyHi - _bodyLo
+_upWick = high - _bodyHi
+_dnWick = _bodyLo - low
+bullRB  = _dnWick > _body and _dnWick > _upWick     // wick-dominant down rejection
+bearRB  = _upWick > _body and _upWick > _dnWick     // wick-dominant up rejection
+var float bRBtop = na   // bullish rejection block (support)
+var float bRBbot = na
+var float sRBtop = na   // bearish rejection block (resistance)
+var float sRBbot = na
+if bullRB
+    bRBtop := _bodyLo
+    bRBbot := low
+if bearRB
+    sRBtop := high
+    sRBbot := _bodyHi
+
+// ---------------------------------------------------------------------------
+//  ORDER BLOCKS — last opposite candle before a displacement move.
+//  Bullish OB: a down candle whose high is then closed above (displacement up).
+//  Bearish OB: an up candle whose low is then closed below (displacement down).
+// ---------------------------------------------------------------------------
+bullOB = close[1] < open[1] and close > high[1]
+bearOB = close[1] > open[1] and close < low[1]
+var float bOBtop = na   // bullish order block (support)
+var float bOBbot = na
+var float sOBtop = na   // bearish order block (resistance)
+var float sOBbot = na
+if bullOB
+    bOBtop := high[1]
+    bOBbot := low[1]
+if bearOB
+    sOBtop := high[1]
+    sOBbot := low[1]
+
+// ---------------------------------------------------------------------------
+//  SETUP STATE  (one active bull + one active bear OTE at a time)
+// ---------------------------------------------------------------------------
+type OTE
+    float legStart      // origin (anchor, fib 1.0)
+    float legEnd        // breakout extreme (fib 0.0)
+    int   startBar
+    int   endBar
+    bool  isBull
+    bool  sweep
+    bool  mss
+    bool  fvg
+    bool  discount      // entry side correct vs equilibrium
+    bool  kz
+    bool  rb            // rejection block inside the OTE zone
+    bool  ob            // order block inside the OTE zone
+    bool  disp          // leg is a displacement (>= dispMult * ATR)
+    bool  smt           // SMT divergence vs the correlated symbol
+    bool  htf           // HTF bias agrees with trade direction
+    int   score
+    bool  triggered
+    box   zone
+    line  lSweet
+    line  lEq
+    line  lT1
+    line  lT2
+    line  lT3
+    label lab
+
+var OTE bull = na
+var OTE bear = na
+
+// fib level helper: level(r) = legEnd - (legEnd-legStart)*r
+f_level(o, r) => o.legEnd - (o.legEnd - o.legStart) * r
+
+// ---------------------------------------------------------------------------
+//  Cleanup helper
+// ---------------------------------------------------------------------------
+f_clear(OTE o) =>
+    if not na(o)
+        box.delete(o.zone)
+        line.delete(o.lSweet)
+        line.delete(o.lEq)
+        line.delete(o.lT1)
+        line.delete(o.lT2)
+        line.delete(o.lT3)
+        label.delete(o.lab)
+
+// ---------------------------------------------------------------------------
+//  Build & draw a setup
+// ---------------------------------------------------------------------------
+f_draw(OTE o) =>
+    col   = o.isBull ? colBull : colBear
+    fill  = o.isBull ? colZone : colZoneB
+    zTop  = math.max(f_level(o, oteHi), f_level(o, oteLo))
+    zBot  = math.min(f_level(o, oteHi), f_level(o, oteLo))
+    rEdge = o.endBar + extendBars
+    o.zone   := box.new(o.endBar, zTop, rEdge, zBot, border_color = col,
+         bgcolor = fill, border_width = 1)
+    o.lSweet := line.new(o.endBar, f_level(o, oteSweet), rEdge, f_level(o, oteSweet),
+         color = col, width = 2, style = line.style_solid)
+    if showEq
+        o.lEq := line.new(o.endBar, f_level(o, 0.5), rEdge, f_level(o, 0.5),
+             color = color.new(color.gray, 30), style = line.style_dashed)
+    if showTargets
+        o.lT1 := line.new(o.endBar, f_level(o, -0.27), rEdge, f_level(o, -0.27),
+             color = color.new(col, 40), style = line.style_dotted)
+        o.lT2 := line.new(o.endBar, f_level(o, -0.62), rEdge, f_level(o, -0.62),
+             color = color.new(col, 40), style = line.style_dotted)
+        o.lT3 := line.new(o.endBar, f_level(o, -1.0),  rEdge, f_level(o, -1.0),
+             color = color.new(col, 40), style = line.style_dotted)
+    if showLabels
+        tag = (o.isBull ? "▲ OTE LONG" : "▼ OTE SHORT") + "  score " + str.tostring(o.score) + "/9"
+        tag := tag + "\n" + (o.sweep ? "✓" : "✗") + " sweep   " + (o.mss ? "✓" : "✗") + " MSS   " + (o.disp ? "✓" : "✗") + " displ"
+        tag := tag + "\n" + (o.discount ? "✓" : "✗") + (o.isBull ? " discount" : " premium")
+        tag := tag + "   " + (o.fvg ? "✓" : "✗") + " FVG   " + (o.rb ? "✓" : "✗") + " RB   " + (o.ob ? "✓" : "✗") + " OB"
+        tag := tag + "\n" + (o.kz ? "✓" : "✗") + " KZ   " + (o.htf ? "✓" : "✗") + " HTF bias (" + htfTF + ")"
+        tag := tag + "\n" + (o.smt ? "✓" : "✗") + " SMT (" + smtSym + ")"
+        o.lab := label.new(o.endBar, o.isBull ? zBot : zTop, tag,
+             style = o.isBull ? label.style_label_up : label.style_label_down,
+             color = color.new(col, 15), textcolor = color.white, size = size.small)
+    o
+
+// ---------------------------------------------------------------------------
+//  Confluence scoring for a candidate leg
+// ---------------------------------------------------------------------------
+f_score(OTE o) =>
+    int s = 1                                  // base: valid leg
+    s := s + (o.sweep    ? 1 : 0)
+    s := s + (o.mss      ? 1 : 0)
+    s := s + (o.discount ? 1 : 0)
+    s := s + (o.fvg      ? 1 : 0)
+    s := s + (o.rb       ? 1 : 0)
+    s := s + (o.ob       ? 1 : 0)
+    s := s + (o.disp     ? 1 : 0)
+    s := s + (o.kz       ? 1 : 0)
+    s
+
+f_gatesPass(OTE o) =>
+    (not strictAnchor or (o.sweep and o.mss)) and
+     (not reqDisp     or o.disp)     and
+     (not reqOB       or o.ob)       and
+     (not reqMSS      or o.mss)      and
+     (not reqSweep    or o.sweep)    and
+     (not reqDiscount or o.discount) and
+     (not reqFVG      or o.fvg)      and
+     (not reqRB       or o.rb)       and
+     (not useSMT      or o.smt)      and
+     (not reqKZ       or o.kz)       and
+     (not useHTF      or o.htf)      and
+     o.score >= minScore
+
+// ---------------------------------------------------------------------------
+//  NEW BULLISH LEG  — fires when a swing HIGH confirms above the prior high
+//  (up-impulse). Leg = prior swing low -> this swing high.
+// ---------------------------------------------------------------------------
+if not na(ph) and not na(lastPL) and lastPHbar > lastPLbar
+    legStart = lastPL
+    legEnd   = lastPH
+    if legEnd > legStart
+        sweepLvl = useBody ? math.min(open[swingLen], close[swingLen]) : low[swingLen]
+        OTE o = OTE.new()
+        o.legStart := legStart
+        o.legEnd   := legEnd
+        o.startBar := lastPLbar
+        o.endBar   := lastPHbar
+        o.isBull   := true
+        // sweep: leg origin took out the previous swing low
+        o.sweep    := not na(prevPL) and lastPL < prevPL
+        // MSS: this high broke the previous swing high (BOS up)
+        o.mss      := not na(prevPH) and lastPH > prevPH
+        // FVG inside the OTE zone?
+        zT = f_level(o, oteHi)
+        zB = f_level(o, oteLo)
+        o.fvg := not na(bFVGtop) and bFVGtop >= zB and bFVGbot <= zT
+        o.rb  := not na(bRBtop) and bRBtop >= zB and bRBbot <= zT
+        o.ob  := not na(bOBtop) and bOBtop >= zB and bOBbot <= zT
+        o.disp := (legEnd - legStart) >= dispMult * atr
+        // bullish SMT: primary made a lower low but the correlate held a higher low
+        o.smt := not na(prevPL) and not na(prevCorrPL) and lastPL < prevPL and lastCorrPL > prevCorrPL
+        o.discount := true   // entry zone is below equilibrium by construction (bullish)
+        o.kz   := kzActive
+        o.htf  := htfBull     // long needs HTF bullish
+        o.score := f_score(o)
+        o.triggered := false
+        if f_gatesPass(o)
+            f_clear(bull)
+            bull := f_draw(o)
+
+// ---------------------------------------------------------------------------
+//  NEW BEARISH LEG  — fires when a swing LOW confirms below the prior low
+//  (down-impulse). Leg = prior swing high -> this swing low.
+// ---------------------------------------------------------------------------
+if not na(pl) and not na(lastPH) and lastPLbar > lastPHbar
+    legStart = lastPH
+    legEnd   = lastPL
+    if legEnd < legStart
+        OTE o = OTE.new()
+        o.legStart := legStart
+        o.legEnd   := legEnd
+        o.startBar := lastPHbar
+        o.endBar   := lastPLbar
+        o.isBull   := false
+        o.sweep    := not na(prevPH) and lastPH > prevPH
+        o.mss      := not na(prevPL) and lastPL < prevPL
+        zT = f_level(o, oteLo)
+        zB = f_level(o, oteHi)
+        o.fvg := not na(sFVGtop) and sFVGtop >= zB and sFVGbot <= zT
+        o.rb  := not na(sRBtop) and sRBtop >= zB and sRBbot <= zT
+        o.ob  := not na(sOBtop) and sOBtop >= zB and sOBbot <= zT
+        o.disp := (legStart - legEnd) >= dispMult * atr
+        // bearish SMT: primary made a higher high but the correlate made a lower high
+        o.smt := not na(prevPH) and not na(prevCorrPH) and lastPH > prevPH and lastCorrPH < prevCorrPH
+        o.discount := true   // premium by construction (bearish)
+        o.kz   := kzActive
+        o.htf  := htfBear     // short needs HTF bearish
+        o.score := f_score(o)
+        o.triggered := false
+        if f_gatesPass(o)
+            f_clear(bear)
+            bear := f_draw(o)
+
+// ---------------------------------------------------------------------------
+//  ENTRY TRIGGER — price trades into the OTE zone, first touch
+// ---------------------------------------------------------------------------
+bullTrig = false
+if not na(bull) and not bull.triggered
+    zT = math.max(f_level(bull, oteHi), f_level(bull, oteLo))
+    zB = math.min(f_level(bull, oteHi), f_level(bull, oteLo))
+    if low <= zT and high >= zB        // wicked into the zone
+        bull.triggered := true
+        bullTrig := true
+        if showLabels
+            label.new(bar_index, zB, "LONG ⟶", style = label.style_label_up,
+                 color = colBull, textcolor = color.white, size = size.tiny)
+
+bearTrig = false
+if not na(bear) and not bear.triggered
+    zT = math.max(f_level(bear, oteHi), f_level(bear, oteLo))
+    zB = math.min(f_level(bear, oteHi), f_level(bear, oteLo))
+    if high >= zB and low <= zT
+        bear.triggered := true
+        bearTrig := true
+        if showLabels
+            label.new(bar_index, zT, "SHORT ⟶", style = label.style_label_down,
+                 color = colBear, textcolor = color.white, size = size.tiny)
+
+// invalidate a setup if price closes beyond the leg origin (stop blown)
+if not na(bull) and close < bull.legStart
+    f_clear(bull)
+    bull := na
+if not na(bear) and close > bear.legStart
+    f_clear(bear)
+    bear := na
+
+// ---------------------------------------------------------------------------
+//  PLOTS + ALERTS
+// ---------------------------------------------------------------------------
+plotshape(bullTrig, "OTE Long entry", shape.triangleup,   location.belowbar, colBull, size = size.small)
+plotshape(bearTrig, "OTE Short entry", shape.triangledown, location.abovebar, colBear, size = size.small)
+
+alertcondition(bullTrig, "OTE Long",  "Price entered a bullish OTE zone")
+alertcondition(bearTrig, "OTE Short", "Price entered a bearish OTE zone")
+if bullTrig
+    alert("OTE LONG triggered — price tapped the bullish OTE zone", alert.freq_once_per_bar)
+if bearTrig
+    alert("OTE SHORT triggered — price tapped the bearish OTE zone", alert.freq_once_per_bar)
