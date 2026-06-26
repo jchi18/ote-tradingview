@@ -32,9 +32,11 @@ riskPct  = input.float(1.0,   "Risk per trade (%)",      minval = 0.1, step = 0.
 pointVal = input.float(2.0,   "$ per point (MNQ = 2)",   minval = 0.01, group = grpP, tooltip = "MNQ = $2/pt, NQ = $20/pt, MES = $5, ES = $50.")
 
 grpV = "Display"
-showLevels = input.bool(true, "Entry / stop / target lines", group = grpV)
-showPanel  = input.bool(true, "Info panel",                  group = grpV)
-showVwap   = input.bool(true, "VWAP line",                   group = grpV)
+showCoach   = input.bool(true,  "Plain-English guidance box (what to do now)", group = grpV, tooltip = "A sentence at the bottom of the chart telling you exactly what to do right now, and why. This is the main thing to read.")
+showLevels  = input.bool(true,  "Entry / stop / target lines", group = grpV)
+showPanel   = input.bool(true,  "Info panel (numbers)",        group = grpV)
+showVwap    = input.bool(true,  "VWAP line",                   group = grpV)
+showMarkers = input.bool(false, "Historical setup triangles",  group = grpV, tooltip = "OFF (default) = clean chart, only the current setup is drawn. ON = a triangle on every past setup (cluttered, for study only).")
 
 grpVP = "Volume levels (context only)"
 showVP     = input.bool(false, "Volume POC + high-volume zones", group = grpVP, tooltip = "CONTEXT ONLY — these do NOT change the entry, stop, or target. Approximate volume profile over the lookback: the fuchsia POC is the most-traded price, gray dotted lines are other high-volume nodes. They act as magnets / support-resistance to be aware of around your VWAP limit. Backtested (Round 9): trading these directly has no edge — use them as awareness, not signals.")
@@ -108,9 +110,9 @@ isLong = longCond and biasBull
 // ───────────────────────── plots ─────────────────────────
 plot(showVwap ? vwap : na, "VWAP (live limit level)", color.new(color.blue, 0), 2)
 
-// fresh-setup markers
-plotshape(freshLong,  "Fresh LONG",  shape.triangleup,   location.belowbar, color.new(color.teal, 0), size = size.small)
-plotshape(freshShort, "Fresh SHORT", shape.triangledown, location.abovebar, color.new(color.maroon, 0), size = size.small)
+// fresh-setup markers (off by default — the guidance box + order lines do the work)
+plotshape(showMarkers and freshLong,  "Fresh LONG",  shape.triangleup,   location.belowbar, color.new(color.teal, 0), size = size.small)
+plotshape(showMarkers and freshShort, "Fresh SHORT", shape.triangledown, location.abovebar, color.new(color.maroon, 0), size = size.small)
 
 // ── Order levels ── three labeled horizontal lines that RIDE the live VWAP while a
 // setup is active and unfilled, so the orange ENTRY line always sits exactly on the
@@ -238,6 +240,33 @@ if showVP and barstate.islast and vpHi > vpLo
         array.push(vpLabels, lb)
         array.set(vols, bestIdx, -1.0)
         drawn += 1
+
+// ── Plain-English guidance box ── one sentence telling you what to do right now and
+// why. Reads the live state and walks you to the single correct action: wait, get
+// ready, or place the order. This is the main thing on the chart to look at.
+var table coach = table.new(position.bottom_center, 1, 1, border_width = 1)
+if showCoach and barstate.islast
+    string msg = ""
+    color  bg  = color.new(color.gray, 0)
+    if not inWin
+        msg := "⏸  OUTSIDE THE WINDOW (trade only 9:30–11:00 ET).  Nothing to do — watch and wait."
+        bg  := color.new(color.gray, 0)
+    else if not biasBull and not biasBear
+        msg := "⏸  NO CLEAR TREND — the 1H EMAs are flat.  Best action today: sit out, don't force a trade."
+        bg  := color.new(color.gray, 0)
+    else if setupActive and isLong
+        msg := "✅  PLACE A BUY LIMIT @ " + str.tostring(entry, format.mintick) + "    Stop " + str.tostring(longStop, format.mintick) + "    Target " + str.tostring(longTgt, format.mintick) + "    Size " + str.tostring(longQty) + " ct\nWhy: 1H trend is BULLISH and price is above VWAP. Rest the limit at the orange line, set stop+target, then walk away. One trade today."
+        bg  := color.new(color.teal, 0)
+    else if setupActive and not isLong
+        msg := "✅  PLACE A SELL LIMIT @ " + str.tostring(entry, format.mintick) + "    Stop " + str.tostring(shortStop, format.mintick) + "    Target " + str.tostring(shortTgt, format.mintick) + "    Size " + str.tostring(shortQty) + " ct\nWhy: 1H trend is BEARISH and price is below VWAP. Rest the limit at the orange line, set stop+target, then walk away. One trade today."
+        bg  := color.new(color.maroon, 0)
+    else if biasBull
+        msg := "👀  GET READY — 1H trend is BULLISH but price is still below VWAP.  No order yet. Wait for price to trade back ABOVE the blue VWAP line; then a BUY LIMIT at VWAP appears."
+        bg  := color.new(color.blue, 0)
+    else
+        msg := "👀  GET READY — 1H trend is BEARISH but price is still above VWAP.  No order yet. Wait for price to trade back BELOW the blue VWAP line; then a SELL LIMIT at VWAP appears."
+        bg  := color.new(color.blue, 0)
+    table.cell(coach, 0, 0, msg, text_color = color.white, bgcolor = bg, text_size = size.normal, text_halign = text.align_left)
 
 // ───────────────────────── alerts ─────────────────────────
 alertcondition(freshLong,  "VWAP long limit",  "VWAP Pullback: BULL bias — rest a BUY-LIMIT at session VWAP. Stop 0.5xATR below, target RR.")
