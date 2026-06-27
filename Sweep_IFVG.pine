@@ -1,10 +1,10 @@
 //@version=6
-// Sweep + IFVG — A+ Quality Reversal Scanner
+// Sweep + IFVG - A+ Quality Reversal Scanner
 //   QUALITY OVER QUANTITY. Fires only when the full ICT sequence completes:
 //       1) a liquidity SWEEP (buy-side or sell-side stop-run),
-//       2) an INVERSE FAIR-VALUE GAP (IFVG) forms — an opposing FVG that price closes
+//       2) an INVERSE FAIR-VALUE GAP (IFVG) forms - an opposing FVG that price closes
 //          through, flipping polarity into support/resistance,
-//       3) that IFVG is RESPECTED — price retraces into the zone and reacts (a confirmation
+//       3) that IFVG is RESPECTED - price retraces into the zone and reacts (a confirmation
 //          candle closes back out of it in-trade-direction). Entry on that confirmation close.
 //   A signal only prints if the setup's calculated R:R >= your minimum (default 1:3).
 //
@@ -13,19 +13,19 @@
 //   break-even (the stop line moves to entry and turns blue). TP2 = final target.
 //
 //   FILTERS (all optional, in settings): chop/range filter (ADX), HTF trend stack, and
-//   London/NY killzone sessions. Everything — targets, stop placement, BE behavior, min R:R —
+//   London/NY killzone sessions. Everything - targets, stop placement, BE behavior, min R:R -
 //   is customizable.
 //
 //   NOTE: the validated backtest entered on first-touch at RR ~1.0 (75% win). This "respect +
-//   high-RR" variant is a NEW, stricter model — backtest it before trading live size.
-indicator("Sweep + IFVG — Quality Reversal", "Sweep/IFVG", overlay = true, max_lines_count = 60, max_labels_count = 80, max_boxes_count = 30)
+//   high-RR" variant is a NEW, stricter model - backtest it before trading live size.
+indicator("Sweep + IFVG - Quality Reversal", "Sweep/IFVG", overlay = true, max_lines_count = 60, max_labels_count = 80, max_boxes_count = 30)
 
-// ═════════════════════════ inputs ═════════════════════════
-grpA = "Setup — Liquidity sweep"
+// ========================= inputs =========================
+grpA = "Setup - Liquidity sweep"
 swingLook = input.int(20, "Sweep swing lookback (bars)", minval = 2, group = grpA, tooltip = "The recent swing high/low whose stops must be run for a valid sweep.")
 sweepWin  = input.int(15, "IFVG must invert within N bars of the sweep", minval = 1, group = grpA, tooltip = "How fresh the sweep must be when the IFVG forms.")
 
-grpB = "Setup — IFVG confirmation"
+grpB = "Setup - IFVG confirmation"
 reqRespect = input.bool(true, "Wait for the IFVG to be RESPECTED", group = grpB, tooltip = "ON (recommended) = price must retrace into the inverted zone AND react (confirmation candle closes back out in-direction) before a signal prints. OFF = signal the moment a retrace touches the zone (more trades, lower quality).")
 zoneLife   = input.int(30, "Inverted zone valid for (bars)", minval = 1, group = grpB, tooltip = "The IFVG expires this many bars after it forms if never confirmed.")
 resetDay   = input.bool(true, "Reset tracked zones each day", group = grpB)
@@ -33,7 +33,7 @@ resetDay   = input.bool(true, "Reset tracked zones each day", group = grpB)
 grpR = "Risk & targets"
 atrLen  = input.int(14, "ATR length", minval = 1, group = grpR)
 stopMode = input.string("IFVG zone", "Stop reference", options = ["IFVG zone", "Sweep extreme"], group = grpR, tooltip = "Where the stop sits before the ATR buffer: just past the inverted FVG, or past the sweep wick (wider, safer).")
-stopBuf = input.float(0.25, "Stop buffer beyond reference (ATR ×)", minval = 0.0, step = 0.05, group = grpR)
+stopBuf = input.float(0.25, "Stop buffer beyond reference (ATR x)", minval = 0.0, step = 0.05, group = grpR)
 minRR   = input.float(3.0, "Minimum R:R to take the trade", minval = 0.5, step = 0.25, group = grpR, tooltip = "Setups whose calculated R:R is below this are skipped. Default 3.0 = only 1:3+ trades.")
 tp2Mode = input.string("Liquidity target", "TP2 (final) mode", options = ["Liquidity target", "Fixed R:R"], group = grpR, tooltip = "Liquidity = aim for the opposing liquidity pool (gives a real, variable R:R that the min-R:R filter screens). Fixed = TP2 at a set R:R multiple.")
 targetRR  = input.float(3.0, "TP2 fixed R:R (Fixed mode)", minval = 0.5, step = 0.25, group = grpR)
@@ -69,7 +69,7 @@ showLines = input.bool(true, "Draw Entry/Stop/TP1/TP2 lines", group = grpV)
 showZone  = input.bool(true, "Draw the IFVG zone", group = grpV)
 showPanel = input.bool(true, "Show info panel", group = grpV)
 
-// ═════════════════════════ core series ═════════════════════════
+// ========================= core series =========================
 atr    = ta.atr(atrLen)
 newDay = timeframe.change("D")
 
@@ -106,7 +106,7 @@ if sweptHi
     lastSweepHiBar := bar_index
     lastSweepHiPx  := high
 
-// ═════════════════════════ zone / setup state ═════════════════════════
+// ========================= zone / setup state =========================
 var float bearTop = na          // raw bearish FVG (gap down)
 var float bearBot = na
 var float bullTop = na          // raw bullish FVG (gap up)
@@ -144,7 +144,7 @@ var box   zBox = na
 
 // panel state
 var float lastRR = na
-var string lastTxt = "—"
+var string lastTxt = "-"
 
 // exit-event flags (this bar)
 be_now = false
@@ -163,7 +163,7 @@ if resetDay and newDay
     isBot := na
     isTagged := false
 
-// ── A) manage the open trade (exits / BE / extend) ──
+// -- A) manage the open trade (exits / BE / extend) --
 if inTrade
     if showLines
         line.set_x2(lnE, bar_index)
@@ -213,7 +213,7 @@ if inTrade
 
 canHunt = not inTrade or not oneAtATime
 
-// ── B) inversion: a raw FVG that price closes through flips to an IFVG ──
+// -- B) inversion: a raw FVG that price closes through flips to an IFVG --
 if canHunt
     if not na(bearTop) and close > bearTop
         ibTop := bearTop
@@ -246,7 +246,7 @@ if not na(isBorn) and (bar_index - isBorn > zoneLife or close > isTop)
     isBot := na
     isTagged := false
 
-// ── C) respect + confirmation -> evaluate R:R -> fire ──
+// -- C) respect + confirmation -> evaluate R:R -> fire --
 longFire = false
 shortFire = false
 var float fE = na
@@ -307,7 +307,7 @@ if canHunt and atr > 0
                     isBot := na
                     isTagged := false
 
-// ── D) update raw FVG zones from THIS bar (done last so inversion uses prior zone) ──
+// -- D) update raw FVG zones from THIS bar (done last so inversion uses prior zone) --
 if bar_index >= 2
     if high < low[2]
         bearTop := low[2]
@@ -316,12 +316,12 @@ if bar_index >= 2
         bullTop := low
         bullBot := high[2]
 
-// ═════════════════════════ position size ═════════════════════════
+// ========================= position size =========================
 f_qty(entry, stop) =>
     rp = math.abs(entry - stop)
     rp > 0 and pointVal > 0 ? math.floor((acct * riskPct / 100.0) / (rp * pointVal)) : na
 
-// ═════════════════════════ open the trade drawing ═════════════════════════
+// ========================= open the trade drawing =========================
 if longFire or shortFire
     // clear any previous drawing
     if not na(lnE)
@@ -360,11 +360,11 @@ if longFire or shortFire
         lblT1 := label.new(bar_index, fT1, "TP1", style = label.style_label_left, color = color.new(color.gray, 100), textcolor = colTp,       size = size.small)
         lblT2 := label.new(bar_index, fT2, "TP2  R:R " + str.tostring(fRR, "#.##"), style = label.style_label_left, color = color.new(color.gray, 100), textcolor = color.green, size = size.small)
 
-// ═════════════════════════ info panel ═════════════════════════
+// ========================= info panel =========================
 var table pan = table.new(position.top_right, 2, 6, border_width = 1)
 if showPanel and barstate.islast
     bias = strongUp ? "stacked UP" : (strongDn ? "stacked DN" : "mixed")
-    armed = not na(ibTop) ? "bull IFVG" : (not na(isTop) ? "bear IFVG" : "—")
+    armed = not na(ibTop) ? "bull IFVG" : (not na(isTop) ? "bear IFVG" : "-")
     table.cell(pan, 0, 0, "Sweep/IFVG", text_size = size.small, text_color = color.white)
     table.cell(pan, 1, 0, inTrade ? "IN TRADE" : "scanning", text_size = size.small, text_color = inTrade ? color.teal : color.gray)
     table.cell(pan, 0, 1, "HTF trend", text_size = size.small, text_color = color.gray)
@@ -378,10 +378,10 @@ if showPanel and barstate.islast
     table.cell(pan, 0, 5, "Min R:R", text_size = size.small, text_color = color.gray)
     table.cell(pan, 1, 5, str.tostring(minRR, "#.##"), text_size = size.small, text_color = color.white)
 
-// ═════════════════════════ alerts ═════════════════════════
-alertcondition(longFire,  "Sweep/IFVG BUY",  "Sweep+IFVG bullish reversal — sweep + respected IFVG, R:R OK")
-alertcondition(shortFire, "Sweep/IFVG SELL", "Sweep+IFVG bearish reversal — sweep + respected IFVG, R:R OK")
+// ========================= alerts =========================
+alertcondition(longFire,  "Sweep/IFVG BUY",  "Sweep+IFVG bullish reversal - sweep + respected IFVG, R:R OK")
+alertcondition(shortFire, "Sweep/IFVG SELL", "Sweep+IFVG bearish reversal - sweep + respected IFVG, R:R OK")
 alertcondition(longFire or shortFire, "Sweep/IFVG entry", "Sweep+IFVG entry signal")
-alertcondition(be_now,   "Sweep/IFVG TP1 / BE", "TP1 hit — stop moved to break-even")
-alertcondition(tp2_now,  "Sweep/IFVG TP2",      "TP2 hit — final target reached")
+alertcondition(be_now,   "Sweep/IFVG TP1 / BE", "TP1 hit - stop moved to break-even")
+alertcondition(tp2_now,  "Sweep/IFVG TP2",      "TP2 hit - final target reached")
 alertcondition(stop_now, "Sweep/IFVG stopped",  "Stop hit")
