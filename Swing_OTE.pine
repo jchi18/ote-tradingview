@@ -26,7 +26,8 @@ showEq     = input.bool(true, "Show 0.5 equilibrium line", group = grpV)
 showInfo   = input.bool(true, "Info label (TF / bias / swing / OTE)", group = grpV)
 
 grpO = "OTE"
-fGold = input.float(0.705, "OTE sweet-spot level", options = [0.62, 0.705, 0.79], group = grpO, tooltip = "The fib drawn as the bold OTE line; the shaded zone always spans 0.62-0.79.")
+fGold    = input.float(0.705, "OTE sweet-spot level", options = [0.62, 0.705, 0.79], group = grpO, tooltip = "The fib drawn as the bold OTE line; the shaded zone always spans 0.62-0.79.")
+maxZones = input.int(5, "Max OTE zones kept on chart", minval = 1, group = grpO, tooltip = "How many recent OTE zones to keep. Older zones freeze in place when a new structure leg forms; only the newest is live (extends right, can upgrade to A+). Set to 1 for just the current zone.")
 
 // ========================= daily bias =========================
 grpB = "Daily bias"
@@ -81,16 +82,32 @@ var float  oteLo = na
 var float  oteHi = na
 var string lastSwType = na
 var table  infoTbl = na
+var box[]   zBoxes = array.new<box>()
+var line[]  zMids  = array.new<line>()
+var line[]  zEqs   = array.new<line>()
+var label[] zLbls  = array.new<label>()
 
-f_clearOTE() =>
+// freeze the current live zone (stop it extending) at time x, then keep at most maxZones
+f_freezeActive(x) =>
     if not na(oteBox)
-        box.delete(oteBox)
-    if not na(oteMid)
-        line.delete(oteMid)
-    if not na(oteEq)
-        line.delete(oteEq)
-    if not na(oteLbl)
-        label.delete(oteLbl)
+        box.set_right(oteBox, x)
+        line.set_x2(oteMid, x)
+        label.set_x(oteLbl, x)
+        if not na(oteEq)
+            line.set_x2(oteEq, x)
+
+f_track(b, m, e, l) =>
+    array.push(zBoxes, b)
+    array.push(zMids, m)
+    array.push(zEqs, e)
+    array.push(zLbls, l)
+    if array.size(zBoxes) > maxZones
+        box.delete(array.shift(zBoxes))
+        line.delete(array.shift(zMids))
+        oe = array.shift(zEqs)
+        if not na(oe)
+            line.delete(oe)
+        label.delete(array.shift(zLbls))
 
 f_oteText(isLong, plus, conf) =>
     "OTE " + str.tostring(fGold) + (isLong ? " (long) " : " (short) ") + (plus ? "A+ " + conf : "A")
@@ -114,7 +131,7 @@ if newPH
             b79  = ph - 0.79 * rng
             gold = ph - fGold * rng
             eqp  = ph - 0.5 * rng
-            f_clearOTE()
+            f_freezeActive(pt)
             oteLong := true
             oteAplus := false
             oteConf := ""
@@ -124,6 +141,7 @@ if newPH
             oteMid := line.new(pt, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
             oteLbl := label.new(time, gold, f_oteText(true, false, ""), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
             oteEq := showEq ? line.new(pt, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
+            f_track(oteBox, oteMid, oteEq, oteLbl)
     lastSwHigh := ph
     lastSwHighT := pt
 
@@ -146,7 +164,7 @@ if newPL
             a79  = pl + 0.79 * rng
             gold = pl + fGold * rng
             eqp  = pl + 0.5 * rng
-            f_clearOTE()
+            f_freezeActive(pt)
             oteLong := false
             oteAplus := false
             oteConf := ""
@@ -156,6 +174,7 @@ if newPL
             oteMid := line.new(pt, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
             oteLbl := label.new(time, gold, f_oteText(false, false, ""), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
             oteEq := showEq ? line.new(pt, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
+            f_track(oteBox, oteMid, oteEq, oteLbl)
     lastSwLow := pl
     lastSwLowT := pt
 
