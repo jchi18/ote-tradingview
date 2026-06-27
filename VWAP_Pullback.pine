@@ -34,7 +34,7 @@ onlyAplus  = input.bool(true, "Only show ★ A+ signals", group = grpE, tooltip 
 grpR = "Risk / targets"
 atrLen   = input.int(14, "ATR length", minval = 1, group = grpR)
 stopMult = input.float(0.5, "Stop = ATR ×", minval = 0.1, step = 0.1, group = grpR, tooltip = "Backtest sweet spot 0.4–0.5. Keep it tight.")
-rr       = input.float(2.0, "Target R:R", minval = 0.5, step = 0.1, group = grpR)
+rr       = input.float(1.25, "Target R:R", minval = 0.5, step = 0.1, group = grpR, tooltip = "1.25 = highest WIN RATE on real NQ (A+ dip-buy: 74% win, PF 3.48). Raise to 2.0–2.5 for max PROFIT per trade (fewer wins, bigger R: RR2.0=67% win/PF3.88, RR2.5=61%/expR1.1). Win rate falls as you raise it.")
 
 grpP = "Position size"
 acct     = input.float(50000, "Account ($)", minval = 0, group = grpP)
