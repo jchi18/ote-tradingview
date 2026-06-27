@@ -10,7 +10,7 @@
 // Clean: clear BUY DIP / SELL RIP arrows, no notes box, daily-anchored VWAP (looks
 // standard on any symbol incl. crypto). Stop/target lines show only while a trade is live.
 indicator("VWAP Pullback — A+ Dip Scanner", "VWAP Pull", overlay = true,
-     max_lines_count = 50, max_labels_count = 50)
+     max_lines_count = 50, max_labels_count = 200)
 
 // ───────────────────────── inputs ─────────────────────────
 grpS = "Trend bias (higher timeframe)"
@@ -46,6 +46,7 @@ showVwap    = input.bool(true, "VWAP line", group = grpV)
 showSignals = input.bool(true, "Entry signals (BUY / SELL arrows)", group = grpV)
 showLevels  = input.bool(true, "Stop / target lines (only while a trade is live)", group = grpV)
 showPanel   = input.bool(true, "Info panel (top-right)", group = grpV)
+showWhy     = input.bool(true, "Confluence checklist (☑ why a signal fires)", group = grpV, tooltip = "Bottom-right table showing which conditions are met (☑) or missing (☐) right now, so you can see why a signal has or hasn't fired. Also: hover any arrow to see the reason for that specific trade.")
 
 // ───────────────────────── VWAP ─────────────────────────
 // Reset either each day (standard look) or at the RTH open (backtested anchor).
@@ -160,11 +161,26 @@ if tradeOn and not (showBuy or showSell)
 // ───────────────────────── plots ─────────────────────────
 plot(showVwap ? vwap : na, "VWAP", color.new(color.blue, 0), 2)
 
-// ★ A+ = big, solid.  ordinary dip = small, faded.  ("only A+" hides the faded ones.)
-plotshape(showSignals and showBuy and aplusBuy,        "A+ BUY",   shape.labelup,   location.belowbar, color.new(color.teal, 0),  text = "★ BUY DIP", textcolor = color.white, size = size.normal)
-plotshape(showSignals and showBuy and not aplusBuy,    "BUY DIP",  shape.labelup,   location.belowbar, color.new(color.teal, 45), text = "buy dip",   textcolor = color.white, size = size.tiny)
-plotshape(showSignals and showSell and aplusSell,      "A+ SELL",  shape.labeldown, location.abovebar, color.new(color.red, 0),   text = "★ SELL RIP",textcolor = color.white, size = size.normal)
-plotshape(showSignals and showSell and not aplusSell,  "SELL RIP", shape.labeldown, location.abovebar, color.new(color.red, 45),  text = "sell rip",  textcolor = color.white, size = size.tiny)
+// "Why this fired" — the confluence reason for a specific signal, shown on hover.
+f_chk(b) => b ? "☑" : "☐"
+f_reason(isBuy) =>
+    aplus = isBuy ? aplusBuy : aplusSell
+    stch  = isBuy ? maxUpATR : maxDnATR
+    r =  (aplus ? "★ A+ " : "") + (isBuy ? "BUY DIP" : "SELL RIP") + " — why this fired:"
+    r += "\n" + f_chk(true) + " HTF trend " + (isBuy ? "BULL ▲" : "BEAR ▼")
+    r += "\n" + f_chk(true) + " VWAP " + (isBuy ? "rising" : "falling")
+    r += "\n" + f_chk(true) + " Price " + (isBuy ? "above" : "below") + " VWAP"
+    r += "\n" + f_chk(true) + " Pulled back to touch VWAP"
+    r += useWindow ? "\n" + f_chk(true) + " Inside time window" : ""
+    r += aplus ? ("\n" + f_chk(true) + " A+ strong stacked trend\n" + f_chk(true) + " A+ stretched " + str.tostring(stch, "0.0") + " ATR from VWAP") : "\n•  grade: standard (not A+)"
+    r += "\nEntry " + str.tostring(tEntry, format.mintick) + "  ·  Stop " + str.tostring(tStop, format.mintick) + "  ·  Target " + str.tostring(tTgt, format.mintick)
+    r
+
+// ★ A+ = big, solid.  ordinary dip = small, faded.  Hover an arrow for the reason.
+if showSignals and showBuy
+    label.new(bar_index, low,  aplusBuy  ? "★ BUY DIP"  : "buy dip",  yloc = yloc.belowbar, style = label.style_label_up,   color = color.new(color.teal, aplusBuy  ? 0 : 45), textcolor = color.white, size = aplusBuy  ? size.normal : size.tiny, tooltip = f_reason(true))
+if showSignals and showSell
+    label.new(bar_index, high, aplusSell ? "★ SELL RIP" : "sell rip", yloc = yloc.abovebar, style = label.style_label_down, color = color.new(color.red,  aplusSell ? 0 : 45), textcolor = color.white, size = aplusSell ? size.normal : size.tiny, tooltip = f_reason(false))
 
 // ── stop / target lines, drawn only while a trade is live ──
 // Left edge trails the current bar (stays close to "now") so it can never exceed
@@ -220,6 +236,28 @@ if showPanel and barstate.islast
     f_row(4, "Stop",     tradeOn ? str.tostring(tStop,  format.mintick) : "—", color.red)
     f_row(5, "Target",   tradeOn ? str.tostring(tTgt,   format.mintick) : "—", color.green)
     f_row(6, "Size (ct)",tradeOn ? str.tostring(tQty) : "—", color.white)
+
+// ───────────────────────── confluence checklist (the "why") ─────────────────────────
+// Live ☑/☐ of every condition for the current trend direction, so you can see exactly
+// what's met and what's still missing before a signal fires.
+var table why = table.new(position.bottom_right, 2, 8, border_width = 1)
+f_wcell(r, k, ok) =>
+    table.cell(why, 0, r, k,         text_color = color.gray,                      text_size = size.small, text_halign = text.align_left)
+    table.cell(why, 1, r, f_chk(ok), text_color = ok ? color.teal : color.gray,    text_size = size.small, text_halign = text.align_right)
+if showWhy and barstate.islast
+    isL = biasBull
+    isS = biasBear
+    dirTxt = isL ? "LONG · buy dip" : isS ? "SHORT · sell rip" : "no trend — wait"
+    dirCol = isL ? color.teal : isS ? color.maroon : color.gray
+    table.cell(why, 0, 0, "Why (confluences)", text_color = color.white, text_size = size.small, text_halign = text.align_left)
+    table.cell(why, 1, 0, dirTxt, text_color = dirCol, text_size = size.small, text_halign = text.align_right)
+    f_wcell(1, "Trend bias (HTF)",            isL or isS)
+    f_wcell(2, "VWAP sloping with trend",     isL ? slopeUp : isS ? slopeDn : false)
+    f_wcell(3, "Price on trend side of VWAP", isL ? close > vwap : isS ? close < vwap : false)
+    f_wcell(4, "Inside time window",          inWin)
+    f_wcell(5, "Pulled back to VWAP",         isL ? dipToVwap : isS ? ripToVwap : false)
+    f_wcell(6, "★ A+ strong stacked trend",   isL ? strongUp : isS ? strongDn : false)
+    f_wcell(7, "★ A+ stretch ≥" + str.tostring(stretchMin, "0.0") + " ATR", isL ? maxUpATR >= stretchMin : isS ? maxDnATR >= stretchMin : false)
 
 // ───────────────────────── alerts ─────────────────────────
 alertcondition(showBuy,  "BUY DIP signal",  "VWAP pullback BUY: uptrend, price dipped to VWAP and bounced. Entry VWAP, stop 0.5xATR below, target RR.")
