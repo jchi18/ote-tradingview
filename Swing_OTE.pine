@@ -7,6 +7,10 @@
 //   actually formed via the HTF pivot time (gap/DST-safe).
 //   BIAS-AWARE: OTE zones are only drawn in the direction of daily bias (auto from a bias
 //   timeframe trend, or a manual override). Counter-bias zones are hidden.
+//   STRUCTURE-BREAK ONLY: an OTE is drawn only when a leg BREAKS structure (a higher-high for
+//   longs, a lower-low for shorts) - the validated trade trigger - and the leg is anchored to
+//   the MAJOR point that started the move (deepest low since the last HH / highest high since
+//   the last LL), not the nearest minor pivot. Both are toggleable.
 //   CONFLUENCE-GRADED: each zone is A+ when an FVG or Order Block lands inside it during
 //   the retrace, else A (faded). RB and liquidity-sweep were backtested for THIS OTE /
 //   continuation model and did NOT improve it, so they are intentionally excluded.
@@ -27,6 +31,8 @@ showInfo   = input.bool(true, "Info label (TF / bias / swing / OTE)", group = gr
 
 grpO = "OTE"
 fGold    = input.float(0.705, "OTE sweet-spot level", options = [0.62, 0.705, 0.79], group = grpO, tooltip = "The fib drawn as the bold OTE line; the shaded zone always spans 0.62-0.79.")
+bosOnly  = input.bool(true, "Only on a structure break (BOS)", group = grpO, tooltip = "ON (recommended): an OTE is drawn only when a leg BREAKS structure - a higher-high for longs, a lower-low for shorts. This is where the validated edge lives (the backtest armed only after price broke the prior swing). OFF = draw an OTE on every swing leg (noisy, includes non-trade pullbacks).")
+majorLeg = input.bool(true, "Anchor leg to the major point before the move", group = grpO, tooltip = "ON (recommended): the leg origin is the DEEPEST pullback low since the last structural high (for longs) / the HIGHEST point since the last structural low (for shorts) - i.e. the major swing that started the big move, not the nearest minor pivot. OFF = use the nearest confirmed pivot as the origin.")
 maxZones = input.int(5, "Max OTE zones kept on chart", minval = 1, group = grpO, tooltip = "How many recent OTE zones to keep. Older zones freeze in place when a new structure leg forms; only the newest is live (extends right, can upgrade to A+). Set to 1 for just the current zone.")
 
 // ========================= daily bias =========================
@@ -54,6 +60,9 @@ tf = structTF == "" ? timeframe.period : structTF
 [ph, phT] = request.security(syminfo.tickerid, tf, [ta.pivothigh(pvtLen, pvtLen), time[pvtLen]], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
 [pl, plT] = request.security(syminfo.tickerid, tf, [ta.pivotlow(pvtLen, pvtLen),  time[pvtLen]], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
 
+// structure-TF high/low/time (closed bars only) for major leg-origin tracking
+[htfH, htfL, htfBT] = request.security(syminfo.tickerid, tf, [high, low, time], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
+
 newPH = not na(ph) and (na(ph[1]) or ph != ph[1])
 newPL = not na(pl) and (na(pl[1]) or pl != pl[1])
 
@@ -69,6 +78,12 @@ var float lastSwHigh = na
 var int   lastSwHighT = na
 var float lastSwLow = na
 var int   lastSwLowT = na
+// running leg-origin extremes: lowest low since the last structural HIGH (long origin),
+// highest high since the last structural LOW (short origin)
+var float runLow  = na
+var int   runLowT = na
+var float runHigh = na
+var int   runHighT = na
 var float zPrice = na
 var int   zTime = na
 var box    oteBox = na
@@ -112,6 +127,14 @@ f_track(b, m, e, l) =>
 f_oteText(isLong, plus, conf) =>
     "OTE " + str.tostring(fGold) + (isLong ? " (long) " : " (short) ") + (plus ? "A+ " + conf : "A")
 
+// track the major leg origins: deepest low since the last HH, highest high since the last LL
+if not na(htfL) and (na(runLow) or htfL < runLow)
+    runLow := htfL
+    runLowT := htfBT
+if not na(htfH) and (na(runHigh) or htfH > runHigh)
+    runHigh := htfH
+    runHighT := htfBT
+
 // ========================= swing HIGH =========================
 if newPH
     pt = phT
@@ -123,9 +146,12 @@ if newPH
         line.new(zTime, zPrice, pt, ph, xloc = xloc.bar_time, color = color.new(colZ, 20), width = 1, style = line.style_dashed)
     zPrice := ph
     zTime := pt
-    // OTE of an UP leg (prior low -> this high) = a LONG discount retracement (bias-gated)
-    if showOTE and allowLong and not na(lastSwLow) and lastSwLowT < pt
-        rng = ph - lastSwLow
+    // LONG OTE: only on an UP leg that BREAKS structure (a higher-high = BOS), anchored to the
+    // MAJOR pullback low that started the move (deepest low since the last structural high).
+    oLow  = majorLeg ? runLow  : lastSwLow
+    oLowT = majorLeg ? runLowT : lastSwLowT
+    if showOTE and allowLong and (not bosOnly or isHH) and not na(oLow) and not na(oLowT) and oLowT < pt
+        rng = ph - oLow
         if rng > 0
             t62  = ph - 0.62 * rng
             b79  = ph - 0.79 * rng
@@ -137,11 +163,15 @@ if newPH
             oteConf := ""
             oteLo := b79
             oteHi := t62
-            oteBox := box.new(pt, t62, time, b79, xloc = xloc.bar_time, border_color = color.new(colOTE, 55), border_width = 1, bgcolor = color.new(colOTE, 90))
-            oteMid := line.new(pt, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
+            oteBox := box.new(oLowT, t62, time, b79, xloc = xloc.bar_time, border_color = color.new(colOTE, 55), border_width = 1, bgcolor = color.new(colOTE, 90))
+            oteMid := line.new(oLowT, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
             oteLbl := label.new(time, gold, f_oteText(true, false, ""), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
-            oteEq := showEq ? line.new(pt, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
+            oteEq := showEq ? line.new(oLowT, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
             f_track(oteBox, oteMid, oteEq, oteLbl)
+    // a structural high completes the up-leg: restart the low-origin tracking for the next leg
+    if isHH
+        runLow := na
+        runLowT := na
     lastSwHigh := ph
     lastSwHighT := pt
 
@@ -156,9 +186,12 @@ if newPL
         line.new(zTime, zPrice, pt, pl, xloc = xloc.bar_time, color = color.new(colZ, 20), width = 1, style = line.style_dashed)
     zPrice := pl
     zTime := pt
-    // OTE of a DOWN leg (prior high -> this low) = a SHORT premium retracement (bias-gated)
-    if showOTE and allowShort and not na(lastSwHigh) and lastSwHighT < pt
-        rng = lastSwHigh - pl
+    // SHORT OTE: only on a DOWN leg that BREAKS structure (a lower-low = BOS), anchored to the
+    // MAJOR rally high that started the move (highest high since the last structural low).
+    oHigh  = majorLeg ? runHigh  : lastSwHigh
+    oHighT = majorLeg ? runHighT : lastSwHighT
+    if showOTE and allowShort and (not bosOnly or isLL) and not na(oHigh) and not na(oHighT) and oHighT < pt
+        rng = oHigh - pl
         if rng > 0
             a62  = pl + 0.62 * rng
             a79  = pl + 0.79 * rng
@@ -170,11 +203,15 @@ if newPL
             oteConf := ""
             oteLo := a62
             oteHi := a79
-            oteBox := box.new(pt, a79, time, a62, xloc = xloc.bar_time, border_color = color.new(colOTE, 55), border_width = 1, bgcolor = color.new(colOTE, 90))
-            oteMid := line.new(pt, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
+            oteBox := box.new(oHighT, a79, time, a62, xloc = xloc.bar_time, border_color = color.new(colOTE, 55), border_width = 1, bgcolor = color.new(colOTE, 90))
+            oteMid := line.new(oHighT, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
             oteLbl := label.new(time, gold, f_oteText(false, false, ""), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
-            oteEq := showEq ? line.new(pt, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
+            oteEq := showEq ? line.new(oHighT, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
             f_track(oteBox, oteMid, oteEq, oteLbl)
+    // a structural low completes the down-leg: restart the high-origin tracking for the next leg
+    if isLL
+        runHigh := na
+        runHighT := na
     lastSwLow := pl
     lastSwLowT := pt
 
