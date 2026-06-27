@@ -21,6 +21,14 @@
 //   It is a genuine THIRD edge, weaker than VWAP-pullback (PF 2.6) and Sweep/IFVG (PF 3.3) but
 //   COMPLEMENTARY: those are mean-reversion/reversal; this fires on trend-day pullbacks.
 //
+//   CONFLUENCES, RANKED BY THE BACKTEST (not by lore):
+//     - FVG inside the OTE zone = the A+ driver. WITH it PF 1.88 / +0.50R; WITHOUT it PF 0.93.
+//     - Order Block inside the OTE zone = also helps (PF 1.74) -> A+ when either is present.
+//     - Rejection Block = did NOT help (PF 1.25, H2 negative) -> excluded.
+//     - Liquidity sweep at the origin = HURTS this model (sweep setups PF 0.69 vs 1.42 without).
+//       A sweep is a REVERSAL cue; this is a CONTINUATION model - the sweep belongs to Sweep/IFVG.
+//       It is left as an off-by-default optional marker only. Killzone/ADX likewise optional.
+//
 //   On a signal it plots Entry / Stop / BE / TP1 / TP2 and a green (buy) / red (sell) dot; HOVER
 //   the dot for the full checklist. TP1 = first partial, then stop trails to break-even; TP2 = final.
 //   Tuned for low NQ/MNQ timeframes (1m-15m). Discretionary scanner - backtest before live size.
@@ -52,10 +60,11 @@ targetLook= input.int(40, "Opposing-liquidity lookback (Liquidity mode)", minval
 tp1RR    = input.float(1.0, "TP1 R:R (first partial)", minval = 0.25, step = 0.25, group = grpR)
 moveBE   = input.bool(true, "Move stop to break-even after TP1", group = grpR)
 
-grpG = "Grading confluences (quality hint)"
-rrPremium = input.float(3.0, "R:R premium for a confluence", minval = 0.5, step = 0.25, group = grpG)
-freshBars = input.int(8, "Fresh-pullback window (bars) for a confluence", minval = 1, group = grpG, tooltip = "An OTE tap within this many bars of the MSS counts as a confluence.")
-gradePlus = input.int(2, "Confluences for A+ (top grade)", minval = 1, maxval = 4, group = grpG, tooltip = "Of 4 optional confluences (R:R premium, killzone, no-chop, fresh pullback) needed for A+. NOTE: the grade is a discretionary quality hint - unlike the core trend+MSS+deep-OTE logic it is NOT independently backtest-ranked.")
+grpD = "PD array confluence (A+ driver - backtest-validated)"
+usePD    = input.bool(true, "Detect FVG / Order Block inside the OTE zone", group = grpD, tooltip = "A Fair Value Gap or Order Block sitting INSIDE the OTE zone is the validated A+ driver. Backtest (real NQ 5m, OOS): setups WITH a PD array in the zone = PF 1.88 / +0.50R; WITHOUT = PF 0.93 / breakeven. (Rejection Blocks did NOT help, so they are excluded.)")
+reqPD    = input.bool(false, "REQUIRE an FVG or OB in the OTE zone (top-tier only)", group = grpD, tooltip = "ON = only fire when a PD array is in the zone (A+ only) - roughly halves the signals but ~doubles expectancy. OFF = take all, let the A/A+ grade flag quality.")
+rrPremium = input.float(3.0, "R:R premium for a confluence (tooltip info)", minval = 0.5, step = 0.25, group = grpD)
+freshBars = input.int(8, "Fresh-pullback window (bars, tooltip info)", minval = 1, group = grpD, tooltip = "An OTE tap within this many bars of the MSS shows as a confluence in the hover checklist.")
 
 grpF = "Optional confluences / filters"
 useSweep = input.bool(false, "Mark a liquidity sweep at the leg origin", group = grpF, tooltip = "OFF by default: backtests showed REQUIRING a sweep HURTS this continuation model. Left as a display/confluence only.")
@@ -145,6 +154,8 @@ var float aLegLow = na
 var float aLegHigh = na
 var int   aBorn = na
 var bool  aSwept = false
+var bool  aFVG = false
+var bool  aOB = false
 var box   oteBox = na
 var bool  mssUpEvt = false
 var bool  mssDnEvt = false
@@ -229,6 +240,24 @@ if inTrade
             tp2_now := true
 
 // ---- B) detect MSS and arm an OTE setup ----
+// scan the impulse leg for a PD array (FVG / OB) overlapping the OTE zone [zlo, zhi]
+f_pd(legLen, zlo, zhi, bull) =>
+    fv = false
+    ob = false
+    ms = int(math.min(legLen, 120))
+    for b = 0 to ms
+        if bull
+            if low[b] > high[b + 2] and low[b] >= zlo and high[b + 2] <= zhi
+                fv := true
+            if close[b] < open[b] and math.min(open[b], close[b]) <= zhi and math.max(open[b], close[b]) >= zlo
+                ob := true
+        else
+            if high[b] < low[b + 2] and high[b] <= zhi and low[b + 2] >= zlo
+                fv := true
+            if close[b] > open[b] and math.min(open[b], close[b]) <= zhi and math.max(open[b], close[b]) >= zlo
+                ob := true
+    [fv, ob]
+
 trendUpOk = not reqTrend or strongUp
 trendDnOk = not reqTrend or strongDn
 
@@ -249,6 +278,9 @@ if not na(lastSH) and not na(lastSL) and not na(lastSHbar) and not na(lastSLbar)
             aLegHigh := legHigh
             aBorn := bar_index
             aSwept := swept
+            [fvL, obL] = f_pd(bar_index - lastSLbar, aBot, aTop, true)
+            aFVG := usePD and fvL
+            aOB := usePD and obL
             usedSHbar := lastSHbar
             mssUpEvt := true
             if showZone
@@ -273,6 +305,9 @@ if not na(lastSH) and not na(lastSL) and not na(lastSHbar) and not na(lastSLbar)
             aLegHigh := legHigh
             aBorn := bar_index
             aSwept := swept
+            [fvS, obS] = f_pd(bar_index - lastSHbar, aBot, aTop, false)
+            aFVG := usePD and fvS
+            aOB := usePD and obS
             usedSLbar := lastSLbar
             mssDnEvt := true
             if showZone
@@ -321,10 +356,10 @@ if armLong and not inTrade and atr > 0 and bar_index > aBorn and low <= aEntry
             cSess = inKZ
             cChop = notChop
             cFresh = (bar_index - aBorn) <= freshBars
-            passReq = (not reqSess or inKZ) and (not reqChop or notChop)
+            cPD = aFVG or aOB
+            passReq = (not reqSess or inKZ) and (not reqChop or notChop) and (not reqPD or cPD)
             if passReq
-                n = (cRR ? 1 : 0) + (cSess ? 1 : 0) + (cChop ? 1 : 0) + (cFresh ? 1 : 0)
-                grade = n >= gradePlus ? "A+" : "A"
+                grade = cPD ? "A+" : "A"
                 q = f_qty(e, s)
                 longFire := true
                 fDir := 1
@@ -334,7 +369,7 @@ if armLong and not inTrade and atr > 0 and bar_index > aBorn and low <= aEntry
                 fT2 := t2
                 fRR := rrv
                 fGrade := grade
-                fTip := "GRADE " + grade + "  (BUY)\n" + f_chk(true) + "HTF trend up\n" + f_chk(true) + "MSS break of structure\n" + f_chk(true) + "OTE pullback (" + str.tostring(oteFib) + ")\n" + f_chk(cFresh) + "Fresh pullback\n" + f_chk(useSweep and aSwept) + "Liquidity sweep at origin\n" + f_chk(cSess) + "Killzone session\n" + f_chk(cChop) + "No chop (ADX)\n" + f_chk(cRR) + "R:R >= " + str.tostring(rrPremium, "#.##") + "\n----\nEntry " + str.tostring(e, format.mintick) + "\nStop  " + str.tostring(s, format.mintick) + "\nTP1   " + str.tostring(fT1, format.mintick) + "\nTP2   " + str.tostring(t2, format.mintick) + "\nR:R   " + str.tostring(rrv, "#.##") + "   Size ~" + str.tostring(na(q) ? 0 : q) + "c"
+                fTip := "GRADE " + grade + "  (BUY)\n" + f_chk(true) + "HTF trend up\n" + f_chk(true) + "MSS break of structure\n" + f_chk(true) + "OTE pullback (" + str.tostring(oteFib) + ")\n" + f_chk(aFVG) + "FVG in OTE zone\n" + f_chk(aOB) + "Order block in OTE zone\n" + f_chk(cFresh) + "Fresh pullback\n" + f_chk(useSweep and aSwept) + "Liquidity sweep at origin\n" + f_chk(cSess) + "Killzone session\n" + f_chk(cChop) + "No chop (ADX)\n" + f_chk(cRR) + "R:R >= " + str.tostring(rrPremium, "#.##") + "\n----\nEntry " + str.tostring(e, format.mintick) + "\nStop  " + str.tostring(s, format.mintick) + "\nTP1   " + str.tostring(fT1, format.mintick) + "\nTP2   " + str.tostring(t2, format.mintick) + "\nR:R   " + str.tostring(rrv, "#.##") + "   Size ~" + str.tostring(na(q) ? 0 : q) + "c"
                 armLong := false
 
 // SHORT: pullback taps the OTE entry level
@@ -351,10 +386,10 @@ if armShort and not inTrade and not longFire and atr > 0 and bar_index > aBorn a
             cSess = inKZ
             cChop = notChop
             cFresh = (bar_index - aBorn) <= freshBars
-            passReq = (not reqSess or inKZ) and (not reqChop or notChop)
+            cPD = aFVG or aOB
+            passReq = (not reqSess or inKZ) and (not reqChop or notChop) and (not reqPD or cPD)
             if passReq
-                n = (cRR ? 1 : 0) + (cSess ? 1 : 0) + (cChop ? 1 : 0) + (cFresh ? 1 : 0)
-                grade = n >= gradePlus ? "A+" : "A"
+                grade = cPD ? "A+" : "A"
                 q = f_qty(e, s)
                 shortFire := true
                 fDir := -1
@@ -364,7 +399,7 @@ if armShort and not inTrade and not longFire and atr > 0 and bar_index > aBorn a
                 fT2 := t2
                 fRR := rrv
                 fGrade := grade
-                fTip := "GRADE " + grade + "  (SELL)\n" + f_chk(true) + "HTF trend down\n" + f_chk(true) + "MSS break of structure\n" + f_chk(true) + "OTE pullback (" + str.tostring(oteFib) + ")\n" + f_chk(cFresh) + "Fresh pullback\n" + f_chk(useSweep and aSwept) + "Liquidity sweep at origin\n" + f_chk(cSess) + "Killzone session\n" + f_chk(cChop) + "No chop (ADX)\n" + f_chk(cRR) + "R:R >= " + str.tostring(rrPremium, "#.##") + "\n----\nEntry " + str.tostring(e, format.mintick) + "\nStop  " + str.tostring(s, format.mintick) + "\nTP1   " + str.tostring(fT1, format.mintick) + "\nTP2   " + str.tostring(t2, format.mintick) + "\nR:R   " + str.tostring(rrv, "#.##") + "   Size ~" + str.tostring(na(q) ? 0 : q) + "c"
+                fTip := "GRADE " + grade + "  (SELL)\n" + f_chk(true) + "HTF trend down\n" + f_chk(true) + "MSS break of structure\n" + f_chk(true) + "OTE pullback (" + str.tostring(oteFib) + ")\n" + f_chk(aFVG) + "FVG in OTE zone\n" + f_chk(aOB) + "Order block in OTE zone\n" + f_chk(cFresh) + "Fresh pullback\n" + f_chk(useSweep and aSwept) + "Liquidity sweep at origin\n" + f_chk(cSess) + "Killzone session\n" + f_chk(cChop) + "No chop (ADX)\n" + f_chk(cRR) + "R:R >= " + str.tostring(rrPremium, "#.##") + "\n----\nEntry " + str.tostring(e, format.mintick) + "\nStop  " + str.tostring(s, format.mintick) + "\nTP1   " + str.tostring(fT1, format.mintick) + "\nTP2   " + str.tostring(t2, format.mintick) + "\nR:R   " + str.tostring(rrv, "#.##") + "   Size ~" + str.tostring(na(q) ? 0 : q) + "c"
                 armShort := false
 
 // ========================= draw the signal =========================
