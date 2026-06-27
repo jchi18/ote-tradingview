@@ -1,0 +1,129 @@
+//@version=6
+// Swing OTE - MTF Structure
+//   Plots confirmed swing highs/lows from a CHOSEN timeframe onto any chart, so you can
+//   execute on a low-TF chart while anchoring your OTE to higher-timeframe structure.
+//   NON-REPAINTING: a swing only prints once its pivot is CONFIRMED on the structure
+//   timeframe (pvtLen bars each side, lookahead off), and is then placed back at the bar
+//   where it actually formed (via xloc.bar_time) - not shifted to the confirmation bar.
+//   Optional: market-structure labels (HH / HL / LH / LL), a zig-zag of the structure, and
+//   the auto OTE fib (0.62 / 0.705 / 0.79 + 0.5 equilibrium) of the most recent impulse leg.
+//   Use it to draw OTE by hand, or alongside the MS+OTE / Sweep-IFVG scanners.
+//   TIP: set the structure timeframe >= your chart timeframe (HTF structure on an LTF chart).
+indicator("Swing OTE - MTF Structure", "Swing OTE", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 50)
+
+// ========================= inputs =========================
+structTF = input.timeframe("60", "Structure timeframe", tooltip = "Timeframe the swings are detected on. Blank = chart TF. Trade an LTF chart and set this to your HTF (15 / 60 / 240) to anchor OTE to higher structure. Keep it >= the chart TF.")
+pvtLen   = input.int(5, "Swing strength (bars each side)", minval = 1, tooltip = "Left/right bars for a confirmed pivot ON THE STRUCTURE TF. Higher = fewer, more significant swings.")
+
+grpV = "Show"
+showSwings = input.bool(true, "Swing point markers", group = grpV)
+showStruct = input.bool(true, "Label structure (HH / HL / LH / LL)", group = grpV, tooltip = "Off = plain H / L markers.")
+showZig    = input.bool(true, "Zig-zag connecting swings", group = grpV)
+showOTE    = input.bool(true, "Auto OTE fib of the latest impulse leg", group = grpV)
+showEq     = input.bool(true, "Show 0.5 equilibrium line", group = grpV)
+
+grpO = "OTE"
+fGold = input.float(0.705, "OTE sweet-spot level", options = [0.62, 0.705, 0.79], group = grpO, tooltip = "The fib drawn as the bold OTE line; the shaded zone always spans 0.62-0.79.")
+
+grpC = "Colors"
+colH   = input.color(color.red,    "Swing high", group = grpC)
+colL   = input.color(color.green,  "Swing low", group = grpC)
+colZ   = input.color(color.gray,   "Zig-zag", group = grpC)
+colOTE = input.color(color.orange, "OTE zone", group = grpC)
+
+// ========================= MTF pivots (non-repainting) =========================
+tf    = structTF == "" ? timeframe.period : structTF
+htfMs = timeframe.in_seconds(tf) * 1000
+
+ph = request.security(syminfo.tickerid, tf, ta.pivothigh(pvtLen, pvtLen), lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
+pl = request.security(syminfo.tickerid, tf, ta.pivotlow(pvtLen, pvtLen),  lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
+
+// each confirmed pivot value repeats across the structure bar's chart bars - act on it once
+newPH = not na(ph) and (na(ph[1]) or ph != ph[1])
+newPL = not na(pl) and (na(pl[1]) or pl != pl[1])
+
+// ========================= state =========================
+var float lastSwHigh = na
+var int   lastSwHighT = na
+var float lastSwLow = na
+var int   lastSwLowT = na
+var float zPrice = na
+var int   zTime = na
+var box   oteBox = na
+var line  oteMid = na
+var line  oteEq = na
+var label oteLbl = na
+
+f_clearOTE() =>
+    if not na(oteBox)
+        box.delete(oteBox)
+    if not na(oteMid)
+        line.delete(oteMid)
+    if not na(oteEq)
+        line.delete(oteEq)
+    if not na(oteLbl)
+        label.delete(oteLbl)
+
+// ========================= swing HIGH =========================
+if newPH
+    pt = time - pvtLen * htfMs
+    isHH = na(lastSwHigh) or ph > lastSwHigh
+    if showSwings
+        label.new(pt, ph, showStruct ? (isHH ? "HH" : "LH") : "H", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_down, color = color.new(colH, 80), textcolor = colH, size = size.small)
+    if showZig and not na(zPrice)
+        line.new(zTime, zPrice, pt, ph, xloc = xloc.bar_time, color = color.new(colZ, 20), width = 1, style = line.style_dashed)
+    zPrice := ph
+    zTime := pt
+    // OTE of an UP leg (prior low -> this high) = a LONG discount retracement
+    if showOTE and not na(lastSwLow) and lastSwLowT < pt
+        rng = ph - lastSwLow
+        if rng > 0
+            t62  = ph - 0.62 * rng
+            b79  = ph - 0.79 * rng
+            gold = ph - fGold * rng
+            eqp  = ph - 0.5 * rng
+            f_clearOTE()
+            oteBox := box.new(pt, t62, time, b79, xloc = xloc.bar_time, border_color = color.new(colOTE, 40), bgcolor = color.new(colOTE, 88))
+            oteMid := line.new(pt, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
+            oteLbl := label.new(time, gold, "OTE " + str.tostring(fGold) + " (long)", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
+            oteEq := showEq ? line.new(pt, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
+    lastSwHigh := ph
+    lastSwHighT := pt
+
+// ========================= swing LOW =========================
+if newPL
+    pt = time - pvtLen * htfMs
+    isLL = na(lastSwLow) or pl < lastSwLow
+    if showSwings
+        label.new(pt, pl, showStruct ? (isLL ? "LL" : "HL") : "L", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_up, color = color.new(colL, 80), textcolor = colL, size = size.small)
+    if showZig and not na(zPrice)
+        line.new(zTime, zPrice, pt, pl, xloc = xloc.bar_time, color = color.new(colZ, 20), width = 1, style = line.style_dashed)
+    zPrice := pl
+    zTime := pt
+    // OTE of a DOWN leg (prior high -> this low) = a SHORT premium retracement
+    if showOTE and not na(lastSwHigh) and lastSwHighT < pt
+        rng = lastSwHigh - pl
+        if rng > 0
+            a62  = pl + 0.62 * rng
+            a79  = pl + 0.79 * rng
+            gold = pl + fGold * rng
+            eqp  = pl + 0.5 * rng
+            f_clearOTE()
+            oteBox := box.new(pt, a79, time, a62, xloc = xloc.bar_time, border_color = color.new(colOTE, 40), bgcolor = color.new(colOTE, 88))
+            oteMid := line.new(pt, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
+            oteLbl := label.new(time, gold, "OTE " + str.tostring(fGold) + " (short)", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
+            oteEq := showEq ? line.new(pt, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
+    lastSwLow := pl
+    lastSwLowT := pt
+
+// ========================= keep the OTE zone extending to the right =========================
+if not na(oteBox)
+    box.set_right(oteBox, time)
+    line.set_x2(oteMid, time)
+    label.set_x(oteLbl, time)
+    if not na(oteEq)
+        line.set_x2(oteEq, time)
+
+// ========================= alerts =========================
+alertcondition(newPH, "Swing OTE - new swing high", "New structure swing high confirmed")
+alertcondition(newPL, "Swing OTE - new swing low",  "New structure swing low confirmed")
