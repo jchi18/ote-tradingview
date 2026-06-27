@@ -16,6 +16,8 @@
 //   On a signal it plots Entry / Stop / Break-even / TP1 / TP2 and a green (buy) or red (sell)
 //   dot on the entry candle. HOVER the dot for the full checklist of what was met on that setup.
 //   TP1 = first partial; when hit the stop auto-trails to break-even. TP2 = final target.
+//   Backtest tip: scale out ~1/3 (not 1/2) at TP1 and let the rest run to TP2 - the runners to
+//   the liquidity target are fat, so keeping more on lifts expectancy (managed exp ~0.99 vs 0.84R).
 //
 //   Tuned for fast NQ timeframes (30s / 1m) but works on any symbol / timeframe.
 //   NOTE: this is a discretionary scanner - backtest before trading live size.
@@ -38,7 +40,7 @@ resetDay   = input.bool(true, "Reset tracked zones each day", group = grpB)
 grpR = "Risk & targets"
 atrLen  = input.int(14, "ATR length", minval = 1, group = grpR)
 stopMode = input.string("IFVG zone", "Stop reference", options = ["IFVG zone", "Sweep extreme"], group = grpR)
-stopBuf = input.float(0.25, "Stop buffer beyond reference (ATR x)", minval = 0.0, step = 0.05, group = grpR)
+stopBuf = input.float(0.15, "Stop buffer beyond reference (ATR x)", minval = 0.0, step = 0.05, group = grpR, tooltip = "Pad beyond the zone edge for the stop. Backtests on real NQ: tighter is better (the zone edge IS the invalidation; a big pad just inflates risk and cuts R:R). 0.15 is the robust pick; do not go below ~0.10 on fast TFs or noise will stop you out.")
 useMinRR = input.bool(true, "Filter out setups below a minimum R:R", group = grpR)
 minRR   = input.float(2.0, "Minimum R:R", minval = 0.5, step = 0.25, group = grpR, tooltip = "Setups whose calculated R:R is below this are skipped (when the filter is on).")
 tp2Mode = input.string("Liquidity target", "TP2 (final) mode", options = ["Liquidity target", "Fixed R:R"], group = grpR)
