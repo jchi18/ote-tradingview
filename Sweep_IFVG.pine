@@ -107,13 +107,17 @@ if sweptHi
     lastSweepHiPx  := high
 
 // ═════════════════════════ zone / setup state ═════════════════════════
-var float bearTop = na, bearBot = na          // raw bearish FVG (gap down)
-var float bullTop = na, bullBot = na          // raw bullish FVG (gap up)
-var float ibTop = na, ibBot = na              // active bullish IFVG (support)
+var float bearTop = na          // raw bearish FVG (gap down)
+var float bearBot = na
+var float bullTop = na          // raw bullish FVG (gap up)
+var float bullBot = na
+var float ibTop = na            // active bullish IFVG (support)
+var float ibBot = na
 var int   ibBorn = na
 var bool  ibTagged = false
 var float ibSweepPx = na
-var float isTop = na, isBot = na              // active bearish IFVG (resistance)
+var float isTop = na            // active bearish IFVG (resistance)
+var float isBot = na
 var int   isBorn = na
 var bool  isTagged = false
 var float isSweepPx = na
@@ -121,10 +125,21 @@ var float isSweepPx = na
 // active trade
 var bool  inTrade = false
 var int   tdir = 0
-var float tEntry = na, tStop = na, tTP1 = na, tTP2 = na, tRR = na
+var float tEntry = na
+var float tStop = na
+var float tTP1 = na
+var float tTP2 = na
+var float tRR = na
 var bool  tp1done = false
-var line  lnE = na, lnS = na, lnT1 = na, lnT2 = na
-var label lblE = na, lblS = na, lblT1 = na, lblT2 = na, dotE = na
+var line  lnE = na
+var line  lnS = na
+var line  lnT1 = na
+var line  lnT2 = na
+var label lblE = na
+var label lblS = na
+var label lblT1 = na
+var label lblT2 = na
+var label dotE = na
 var box   zBox = na
 
 // panel state
@@ -137,9 +152,16 @@ tp2_now = false
 stop_now = false
 
 if resetDay and newDay
-    bearTop := na, bearBot := na, bullTop := na, bullBot := na
-    ibTop := na, ibBot := na, ibTagged := false
-    isTop := na, isBot := na, isTagged := false
+    bearTop := na
+    bearBot := na
+    bullTop := na
+    bullBot := na
+    ibTop := na
+    ibBot := na
+    ibTagged := false
+    isTop := na
+    isBot := na
+    isTagged := false
 
 // ── A) manage the open trade (exits / BE / extend) ──
 if inTrade
@@ -158,8 +180,12 @@ if inTrade
             tStop := tEntry
             be_now := true
             if showLines
-                line.set_y1(lnS, tEntry), line.set_y2(lnS, tEntry), line.set_color(lnS, color.blue)
-                label.set_y(lblS, tEntry), label.set_text(lblS, "BE"), label.set_textcolor(lblS, color.blue)
+                line.set_y1(lnS, tEntry)
+                line.set_y2(lnS, tEntry)
+                line.set_color(lnS, color.blue)
+                label.set_y(lblS, tEntry)
+                label.set_text(lblS, "BE")
+                label.set_textcolor(lblS, color.blue)
         if low <= tStop
             inTrade := false
             stop_now := true
@@ -172,8 +198,12 @@ if inTrade
             tStop := tEntry
             be_now := true
             if showLines
-                line.set_y1(lnS, tEntry), line.set_y2(lnS, tEntry), line.set_color(lnS, color.blue)
-                label.set_y(lblS, tEntry), label.set_text(lblS, "BE"), label.set_textcolor(lblS, color.blue)
+                line.set_y1(lnS, tEntry)
+                line.set_y2(lnS, tEntry)
+                line.set_color(lnS, color.blue)
+                label.set_y(lblS, tEntry)
+                label.set_text(lblS, "BE")
+                label.set_textcolor(lblS, color.blue)
         if high >= tStop
             inTrade := false
             stop_now := true
@@ -186,28 +216,44 @@ canHunt = not inTrade or not oneAtATime
 // ── B) inversion: a raw FVG that price closes through flips to an IFVG ──
 if canHunt
     if not na(bearTop) and close > bearTop
-        ibTop := bearTop, ibBot := bearBot, ibBorn := bar_index, ibTagged := false
+        ibTop := bearTop
+        ibBot := bearBot
+        ibBorn := bar_index
+        ibTagged := false
         ibSweepPx := lastSweepLoPx
-        bearTop := na, bearBot := na
+        bearTop := na
+        bearBot := na
         if showZone
             zBox := box.new(bar_index, ibTop, bar_index + zoneLife, ibBot, border_color = color.new(color.teal, 50), bgcolor = color.new(color.teal, 90))
     if not na(bullBot) and close < bullBot
-        isTop := bullTop, isBot := bullBot, isBorn := bar_index, isTagged := false
+        isTop := bullTop
+        isBot := bullBot
+        isBorn := bar_index
+        isTagged := false
         isSweepPx := lastSweepHiPx
-        bullTop := na, bullBot := na
+        bullTop := na
+        bullBot := na
         if showZone
             zBox := box.new(bar_index, isTop, bar_index + zoneLife, isBot, border_color = color.new(color.maroon, 50), bgcolor = color.new(color.maroon, 90))
 
 // expire / invalidate zones
 if not na(ibBorn) and (bar_index - ibBorn > zoneLife or close < ibBot)
-    ibTop := na, ibBot := na, ibTagged := false
+    ibTop := na
+    ibBot := na
+    ibTagged := false
 if not na(isBorn) and (bar_index - isBorn > zoneLife or close > isTop)
-    isTop := na, isBot := na, isTagged := false
+    isTop := na
+    isBot := na
+    isTagged := false
 
 // ── C) respect + confirmation -> evaluate R:R -> fire ──
 longFire = false
 shortFire = false
-var float fE = na, fS = na, fT1 = na, fT2 = na, fRR = na
+var float fE = na
+var float fS = na
+var float fT1 = na
+var float fT2 = na
+var float fRR = na
 
 if canHunt and atr > 0
     // LONG: bullish IFVG support
@@ -227,8 +273,14 @@ if canHunt and atr > 0
                 rrv = (t2 - e) / risk
                 if t2 > e and rrv >= minRR
                     longFire := true
-                    fE := e, fS := s, fT1 := e + tp1RR * risk, fT2 := t2, fRR := rrv
-                    ibTop := na, ibBot := na, ibTagged := false
+                    fE := e
+                    fS := s
+                    fT1 := e + tp1RR * risk
+                    fT2 := t2
+                    fRR := rrv
+                    ibTop := na
+                    ibBot := na
+                    ibTagged := false
     // SHORT: bearish IFVG resistance
     if not na(isBot) and not longFire
         if high >= isBot
@@ -246,15 +298,23 @@ if canHunt and atr > 0
                 rrv = (e - t2) / risk
                 if t2 < e and rrv >= minRR
                     shortFire := true
-                    fE := e, fS := s, fT1 := e - tp1RR * risk, fT2 := t2, fRR := rrv
-                    isTop := na, isBot := na, isTagged := false
+                    fE := e
+                    fS := s
+                    fT1 := e - tp1RR * risk
+                    fT2 := t2
+                    fRR := rrv
+                    isTop := na
+                    isBot := na
+                    isTagged := false
 
 // ── D) update raw FVG zones from THIS bar (done last so inversion uses prior zone) ──
 if bar_index >= 2
     if high < low[2]
-        bearTop := low[2], bearBot := high
+        bearTop := low[2]
+        bearBot := high
     if low > high[2]
-        bullTop := low, bullBot := high[2]
+        bullTop := low
+        bullBot := high[2]
 
 // ═════════════════════════ position size ═════════════════════════
 f_qty(entry, stop) =>
@@ -265,14 +325,24 @@ f_qty(entry, stop) =>
 if longFire or shortFire
     // clear any previous drawing
     if not na(lnE)
-        line.delete(lnE), line.delete(lnS), line.delete(lnT1), line.delete(lnT2)
+        line.delete(lnE)
+        line.delete(lnS)
+        line.delete(lnT1)
+        line.delete(lnT2)
     if not na(lblE)
-        label.delete(lblE), label.delete(lblS), label.delete(lblT1), label.delete(lblT2)
+        label.delete(lblE)
+        label.delete(lblS)
+        label.delete(lblT1)
+        label.delete(lblT2)
     if not na(dotE)
         label.delete(dotE)
     inTrade := true
     tdir := longFire ? 1 : -1
-    tEntry := fE, tStop := fS, tTP1 := fT1, tTP2 := fT2, tRR := fRR
+    tEntry := fE
+    tStop := fS
+    tTP1 := fT1
+    tTP2 := fT2
+    tRR := fRR
     tp1done := false
     lastRR := fRR
     q = f_qty(fE, fS)
