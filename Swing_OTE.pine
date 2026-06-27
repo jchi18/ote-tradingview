@@ -3,15 +3,17 @@
 //   Plots confirmed swing highs/lows from a CHOSEN timeframe onto any chart, so you can
 //   execute on a low-TF chart while anchoring your OTE to higher-timeframe structure.
 //   NON-REPAINTING: a swing only prints once its pivot is CONFIRMED on the structure
-//   timeframe (pvtLen bars each side, lookahead off), and is then placed back at the bar
-//   where it actually formed (via xloc.bar_time) - not shifted to the confirmation bar.
-//   Optional: market-structure labels (HH / HL / LH / LL), a zig-zag of the structure, and
-//   the auto OTE fib (0.62 / 0.705 / 0.79 + 0.5 equilibrium) of the most recent impulse leg.
-//   Use it to draw OTE by hand, or alongside the MS+OTE / Sweep-IFVG scanners.
-//   TIP: set the structure timeframe >= your chart timeframe (HTF structure on an LTF chart).
+//   timeframe (pvtLen bars each side, lookahead off), placed back at the bar where it
+//   actually formed via the HTF pivot time (gap/DST-safe).
+//   BIAS-AWARE: OTE zones are only drawn in the direction of daily bias (auto from a bias
+//   timeframe trend, or a manual override). Counter-bias zones are hidden.
+//   CONFLUENCE-GRADED: each zone is A+ when an FVG or Order Block lands inside it during
+//   the retrace, else A (faded). RB and liquidity-sweep were backtested for THIS OTE /
+//   continuation model and did NOT improve it, so they are intentionally excluded.
+//   Optional: HH / HL / LH / LL structure labels, a zig-zag, and the 0.5 equilibrium line.
 indicator("Swing OTE - MTF Structure", "Swing OTE", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 50)
 
-// ========================= inputs =========================
+// ========================= structure inputs =========================
 structTF = input.timeframe("60", "Structure timeframe", tooltip = "Timeframe the swings are detected on. Blank = chart TF. Trade an LTF chart and set this to your HTF (15 / 60 / 240) to anchor OTE to higher structure. Keep it >= the chart TF.")
 pvtLen   = input.int(5, "Swing strength (bars each side)", minval = 1, tooltip = "Left/right bars for a confirmed pivot ON THE STRUCTURE TF. Higher = fewer, more significant swings.")
 
@@ -21,12 +23,22 @@ showStruct = input.bool(true, "Label structure (HH / HL / LH / LL)", group = grp
 showZig    = input.bool(true, "Zig-zag connecting swings", group = grpV)
 showOTE    = input.bool(true, "Auto OTE fib of the latest impulse leg", group = grpV)
 showEq     = input.bool(true, "Show 0.5 equilibrium line", group = grpV)
+showInfo   = input.bool(true, "Info label (TF / bias / swing / OTE)", group = grpV)
 
 grpO = "OTE"
 fGold = input.float(0.705, "OTE sweet-spot level", options = [0.62, 0.705, 0.79], group = grpO, tooltip = "The fib drawn as the bold OTE line; the shaded zone always spans 0.62-0.79.")
 
-grpV2 = "Show"
-showInfo = input.bool(true, "Info label (TF / last swing / OTE)", group = grpV2)
+// ========================= daily bias =========================
+grpB = "Daily bias"
+biasMode    = input.string("Auto", "Bias", options = ["Auto", "Long only", "Short only", "Both"], group = grpB, tooltip = "Auto = read the bias-timeframe trend. Long/Short only = force a direction from your own top-down read. Both = no gate. Counter-bias OTE zones are HIDDEN.")
+biasTF      = input.timeframe("D", "Bias timeframe (Auto)", group = grpB, tooltip = "Timeframe whose EMA trend defines auto bias. Daily by default; drop to 240 / 60 for an intraday bias.")
+biasFastLen = input.int(20, "Bias EMA fast", minval = 1, group = grpB)
+biasSlowLen = input.int(50, "Bias EMA slow", minval = 1, group = grpB)
+
+// ========================= confluence =========================
+grpCf = "Confluence (A+ upgrade)"
+useFVG = input.bool(true, "FVG inside the zone -> A+", group = grpCf)
+useOB  = input.bool(true, "Order block inside the zone -> A+", group = grpCf, tooltip = "Detected on the CHART timeframe inside the OTE band as price retraces. RB and liquidity-sweep were tested for this continuation model and did NOT help, so they are excluded.")
 
 grpC = "Colors"
 colH   = input.color(color.red,    "Swing high", group = grpC)
@@ -37,14 +49,19 @@ colOTE = input.color(color.orange, "OTE zone", group = grpC)
 // ========================= MTF pivots (non-repainting) =========================
 tf = structTF == "" ? timeframe.period : structTF
 
-// request the pivot value AND the actual bar time it formed on (time[pvtLen] = the pivot
-// bar, evaluated on the structure TF) so placement is gap/DST-safe with no manual offset.
+// pivot value + the actual bar time it formed on (time[pvtLen] on the structure TF)
 [ph, phT] = request.security(syminfo.tickerid, tf, [ta.pivothigh(pvtLen, pvtLen), time[pvtLen]], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
 [pl, plT] = request.security(syminfo.tickerid, tf, [ta.pivotlow(pvtLen, pvtLen),  time[pvtLen]], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
 
-// each confirmed pivot value repeats across the structure bar's chart bars - act on it once
 newPH = not na(ph) and (na(ph[1]) or ph != ph[1])
 newPL = not na(pl) and (na(pl[1]) or pl != pl[1])
+
+// ========================= bias =========================
+[bFast, bSlow] = request.security(syminfo.tickerid, biasTF, [ta.ema(close, biasFastLen), ta.ema(close, biasSlowLen)], lookahead = barmerge.lookahead_off)
+biasBull = not na(bFast) and not na(bSlow) and bFast > bSlow
+biasBear = not na(bFast) and not na(bSlow) and bFast < bSlow
+allowLong  = biasMode == "Both" or biasMode == "Long only"  or (biasMode == "Auto" and biasBull)
+allowShort = biasMode == "Both" or biasMode == "Short only" or (biasMode == "Auto" and biasBear)
 
 // ========================= state =========================
 var float lastSwHigh = na
@@ -57,8 +74,12 @@ var box    oteBox = na
 var line   oteMid = na
 var line   oteEq = na
 var label  oteLbl = na
+var bool   oteLong = false
+var bool   oteAplus = false
+var string oteConf = ""
+var float  oteLo = na
+var float  oteHi = na
 var string lastSwType = na
-var string oteDir = na
 var table  infoTbl = na
 
 f_clearOTE() =>
@@ -71,6 +92,9 @@ f_clearOTE() =>
     if not na(oteLbl)
         label.delete(oteLbl)
 
+f_oteText(isLong, plus, conf) =>
+    "OTE " + str.tostring(fGold) + (isLong ? " (long) " : " (short) ") + (plus ? "A+ " + conf : "A")
+
 // ========================= swing HIGH =========================
 if newPH
     pt = phT
@@ -82,8 +106,8 @@ if newPH
         line.new(zTime, zPrice, pt, ph, xloc = xloc.bar_time, color = color.new(colZ, 20), width = 1, style = line.style_dashed)
     zPrice := ph
     zTime := pt
-    // OTE of an UP leg (prior low -> this high) = a LONG discount retracement
-    if showOTE and not na(lastSwLow) and lastSwLowT < pt
+    // OTE of an UP leg (prior low -> this high) = a LONG discount retracement (bias-gated)
+    if showOTE and allowLong and not na(lastSwLow) and lastSwLowT < pt
         rng = ph - lastSwLow
         if rng > 0
             t62  = ph - 0.62 * rng
@@ -91,11 +115,15 @@ if newPH
             gold = ph - fGold * rng
             eqp  = ph - 0.5 * rng
             f_clearOTE()
-            oteBox := box.new(pt, t62, time, b79, xloc = xloc.bar_time, border_color = color.new(colOTE, 40), bgcolor = color.new(colOTE, 88))
+            oteLong := true
+            oteAplus := false
+            oteConf := ""
+            oteLo := b79
+            oteHi := t62
+            oteBox := box.new(pt, t62, time, b79, xloc = xloc.bar_time, border_color = color.new(colOTE, 55), border_width = 1, bgcolor = color.new(colOTE, 90))
             oteMid := line.new(pt, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
-            oteLbl := label.new(time, gold, "OTE " + str.tostring(fGold) + " (long)", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
+            oteLbl := label.new(time, gold, f_oteText(true, false, ""), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
             oteEq := showEq ? line.new(pt, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
-            oteDir := "LONG"
     lastSwHigh := ph
     lastSwHighT := pt
 
@@ -110,8 +138,8 @@ if newPL
         line.new(zTime, zPrice, pt, pl, xloc = xloc.bar_time, color = color.new(colZ, 20), width = 1, style = line.style_dashed)
     zPrice := pl
     zTime := pt
-    // OTE of a DOWN leg (prior high -> this low) = a SHORT premium retracement
-    if showOTE and not na(lastSwHigh) and lastSwHighT < pt
+    // OTE of a DOWN leg (prior high -> this low) = a SHORT premium retracement (bias-gated)
+    if showOTE and allowShort and not na(lastSwHigh) and lastSwHighT < pt
         rng = lastSwHigh - pl
         if rng > 0
             a62  = pl + 0.62 * rng
@@ -119,35 +147,62 @@ if newPL
             gold = pl + fGold * rng
             eqp  = pl + 0.5 * rng
             f_clearOTE()
-            oteBox := box.new(pt, a79, time, a62, xloc = xloc.bar_time, border_color = color.new(colOTE, 40), bgcolor = color.new(colOTE, 88))
+            oteLong := false
+            oteAplus := false
+            oteConf := ""
+            oteLo := a62
+            oteHi := a79
+            oteBox := box.new(pt, a79, time, a62, xloc = xloc.bar_time, border_color = color.new(colOTE, 55), border_width = 1, bgcolor = color.new(colOTE, 90))
             oteMid := line.new(pt, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
-            oteLbl := label.new(time, gold, "OTE " + str.tostring(fGold) + " (short)", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
+            oteLbl := label.new(time, gold, f_oteText(false, false, ""), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
             oteEq := showEq ? line.new(pt, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
-            oteDir := "SHORT"
     lastSwLow := pl
     lastSwLowT := pt
 
-// ========================= keep the OTE zone extending to the right =========================
+// ========================= extend the live zone + grade it A+ on confluence =========================
 if not na(oteBox)
     box.set_right(oteBox, time)
     line.set_x2(oteMid, time)
     label.set_x(oteLbl, time)
     if not na(oteEq)
         line.set_x2(oteEq, time)
+    // FVG / OB landing inside the band as price retraces -> upgrade A -> A+
+    if not oteAplus and (useFVG or useOB) and not na(oteLo)
+        fvgHit = false
+        obHit = false
+        if oteLong
+            fvgHit := useFVG and low > high[2] and low >= oteLo and high[2] <= oteHi
+            obHit  := useOB and open[1] > close[1] and open[1] >= oteLo and close[1] <= oteHi
+        else
+            fvgHit := useFVG and high < low[2] and low[2] >= oteLo and high <= oteHi
+            obHit  := useOB and close[1] > open[1] and close[1] >= oteLo and open[1] <= oteHi
+        if fvgHit or obHit
+            oteAplus := true
+            oteConf := fvgHit and obHit ? "FVG+OB" : fvgHit ? "FVG" : "OB"
+            box.set_bgcolor(oteBox, color.new(colOTE, 75))
+            box.set_border_color(oteBox, colOTE)
+            box.set_border_width(oteBox, 2)
+            label.set_text(oteLbl, f_oteText(oteLong, true, oteConf))
+            label.set_textcolor(oteLbl, oteLong ? colL : colH)
 
 // ========================= info label =========================
 if showInfo and barstate.islast
     if na(infoTbl)
-        infoTbl := table.new(position.bottom_right, 2, 3, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 60))
+        infoTbl := table.new(position.bottom_right, 2, 4, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 60))
     tfTxt = str.tostring(timeframe.in_seconds(tf) / 60) + "m"
+    biasTxt = biasMode == "Auto" ? (biasBull ? "BULL " : biasBear ? "BEAR " : "flat ") + (biasTF == "" ? timeframe.period : biasTF) : biasMode
+    biasCol = (allowLong and not allowShort) ? colL : (allowShort and not allowLong) ? colH : color.gray
     swCol = na(lastSwType) ? color.gray : (str.contains(lastSwType, "H") and not str.contains(lastSwType, "HL") ? colH : colL)
-    oteCol = oteDir == "LONG" ? colL : oteDir == "SHORT" ? colH : color.gray
+    oteTxt = na(oteLo) ? "-" : (oteLong ? "LONG " : "SHORT ") + (oteAplus ? "A+ " + oteConf : "A")
+    oteCol = na(oteLo) ? color.gray : (oteLong ? colL : colH)
     table.cell(infoTbl, 0, 0, "Structure TF", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
     table.cell(infoTbl, 1, 0, tfTxt, text_color = color.white, text_size = size.small, text_halign = text.align_right)
-    table.cell(infoTbl, 0, 1, "Last swing", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(infoTbl, 1, 1, na(lastSwType) ? "-" : lastSwType, text_color = swCol, text_size = size.small, text_halign = text.align_right)
-    table.cell(infoTbl, 0, 2, "OTE", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(infoTbl, 1, 2, na(oteDir) ? "-" : oteDir, text_color = oteCol, text_size = size.small, text_halign = text.align_right)
+    table.cell(infoTbl, 0, 1, "Bias", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTbl, 1, 1, biasTxt, text_color = biasCol, text_size = size.small, text_halign = text.align_right)
+    table.cell(infoTbl, 0, 2, "Last swing", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTbl, 1, 2, na(lastSwType) ? "-" : lastSwType, text_color = swCol, text_size = size.small, text_halign = text.align_right)
+    table.cell(infoTbl, 0, 3, "OTE", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTbl, 1, 3, oteTxt, text_color = oteCol, text_size = size.small, text_halign = text.align_right)
 
 // ========================= alerts =========================
 alertcondition(newPH, "Swing OTE - new swing high", "New structure swing high confirmed")
