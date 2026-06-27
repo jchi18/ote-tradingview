@@ -44,7 +44,7 @@ stretchMin = input.float(1.0, "A+: min stretch from VWAP (ATR)", minval = 0, ste
 grpR = "Risk / targets"
 atrLen   = input.int(14, "ATR length", minval = 1, group = grpR)
 stopMult = input.float(0.5, "Stop = ATR ×", minval = 0.1, step = 0.1, group = grpR)
-rr       = input.float(2.0, "Target R:R", minval = 0.5, step = 0.1, group = grpR)
+rr       = input.float(1.25, "Target R:R", minval = 0.5, step = 0.1, group = grpR, tooltip = "1.25 = highest WIN RATE on real NQ (A+ dip-buy: 74% win, PF 3.48). Raise to 2.0–2.5 for max PROFIT per trade (RR2.0=67% win/PF3.88, RR2.5=61%/expR1.1).")
 
 grpP = "Position size"
 sizeMode = input.string("Fixed contracts", "Sizing", options = ["Fixed contracts", "Risk % of equity"], group = grpP, tooltip = "Fixed = clean R-multiples in the tester. Risk % = size each trade to risk a fixed % (realistic).")
