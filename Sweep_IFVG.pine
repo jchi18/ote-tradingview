@@ -1,100 +1,103 @@
 //@version=6
-// Sweep + IFVG - A+ Quality Reversal Scanner
-//   QUALITY OVER QUANTITY. Fires only when the full ICT sequence completes:
-//       1) a liquidity SWEEP (buy-side or sell-side stop-run),
-//       2) an INVERSE FAIR-VALUE GAP (IFVG) forms - an opposing FVG that price closes
-//          through, flipping polarity into support/resistance,
-//       3) that IFVG is RESPECTED - price retraces into the zone and reacts (a confirmation
-//          candle closes back out of it in-trade-direction). Entry on that confirmation close.
-//   A signal only prints if the setup's calculated R:R >= your minimum (default 1:3).
+// Sweep + IFVG - Graded Reversal Scanner  (Printicator-style)
+//   Detects a 3-STEP institutional reversal in real time and fires the moment it aligns:
+//       1) LIQUIDITY SWEEP  - a stop-run beyond a recent swing (buy-side or sell-side).
+//       2) V-SHAPE RECOVERY - a sharp snap-back off the sweep (>= N x ATR within a few bars).
+//       3) INVERSION FVG    - an opposing FVG that price closes through, flipping into
+//                             support/resistance; entry triggers when price retraces to that
+//                             zone and respects it.
 //
-//   On a valid setup it marks the entry candle with a red dot and draws Entry / Stop / TP1 /
-//   TP2, plus the calculated R:R. TP1 = first partial; when TP1 is hit the stop auto-trails to
-//   break-even (the stop line moves to entry and turns blue). TP2 = final target.
+//   Every signal is GRADED A / A+ / A++ by how many confluences are present (HTF trend,
+//   killzone session, no-chop, strong displacement, R:R >= premium). Grading does NOT block
+//   signals - it rates them. Each can ALSO be set to "Require" to hard-filter.
 //
-//   FILTERS (all optional, in settings): chop/range filter (ADX), HTF trend stack, and
-//   London/NY killzone sessions. Everything - targets, stop placement, BE behavior, min R:R -
-//   is customizable.
+//   On a signal it plots Entry / Stop / Break-even / TP1 / TP2 and a green (buy) or red (sell)
+//   dot on the entry candle. HOVER the dot for the full checklist of what was met on that setup.
+//   TP1 = first partial; when hit the stop auto-trails to break-even. TP2 = final target.
 //
-//   NOTE: the validated backtest entered on first-touch at RR ~1.0 (75% win). This "respect +
-//   high-RR" variant is a NEW, stricter model - backtest it before trading live size.
-indicator("Sweep + IFVG - Quality Reversal", "Sweep/IFVG", overlay = true, max_lines_count = 60, max_labels_count = 80, max_boxes_count = 30)
+//   Tuned for fast NQ timeframes (30s / 1m) but works on any symbol / timeframe.
+//   NOTE: this is a discretionary scanner - backtest before trading live size.
+indicator("Sweep + IFVG - Graded Reversal", "Sweep/IFVG", overlay = true, max_lines_count = 60, max_labels_count = 500, max_boxes_count = 30)
 
 // ========================= inputs =========================
-grpA = "Setup - Liquidity sweep"
+grpA = "Step 1 - Liquidity sweep"
 swingLook = input.int(20, "Sweep swing lookback (bars)", minval = 2, group = grpA, tooltip = "The recent swing high/low whose stops must be run for a valid sweep.")
-sweepWin  = input.int(15, "IFVG must invert within N bars of the sweep", minval = 1, group = grpA, tooltip = "How fresh the sweep must be when the IFVG forms.")
+sweepWin  = input.int(20, "Sweep must be within N bars of the IFVG", minval = 1, group = grpA)
 
-grpB = "Setup - IFVG confirmation"
-reqRespect = input.bool(true, "Wait for the IFVG to be RESPECTED", group = grpB, tooltip = "ON (recommended) = price must retrace into the inverted zone AND react (confirmation candle closes back out in-direction) before a signal prints. OFF = signal the moment a retrace touches the zone (more trades, lower quality).")
-zoneLife   = input.int(30, "Inverted zone valid for (bars)", minval = 1, group = grpB, tooltip = "The IFVG expires this many bars after it forms if never confirmed.")
+grpV = "Step 2 - V-shape recovery"
+vWin    = input.int(10, "Recovery window (bars after the sweep)", minval = 1, group = grpV, tooltip = "The snap-back must happen within this many bars of the sweep to count as a V.")
+vMinAtr = input.float(1.0, "Min recovery size (ATR x)", minval = 0.1, step = 0.1, group = grpV, tooltip = "How far price must reverse off the sweep extreme to qualify as a V-shape recovery.")
+
+grpB = "Step 3 - Inversion FVG"
+reqRespect = input.bool(true, "Require the IFVG to be respected", group = grpB, tooltip = "ON = price must retrace into the inverted zone AND react (close back in-direction). OFF = trigger on first touch.")
+zoneLife   = input.int(40, "Inverted zone valid for (bars)", minval = 1, group = grpB)
 resetDay   = input.bool(true, "Reset tracked zones each day", group = grpB)
 
 grpR = "Risk & targets"
 atrLen  = input.int(14, "ATR length", minval = 1, group = grpR)
-stopMode = input.string("IFVG zone", "Stop reference", options = ["IFVG zone", "Sweep extreme"], group = grpR, tooltip = "Where the stop sits before the ATR buffer: just past the inverted FVG, or past the sweep wick (wider, safer).")
+stopMode = input.string("IFVG zone", "Stop reference", options = ["IFVG zone", "Sweep extreme"], group = grpR)
 stopBuf = input.float(0.25, "Stop buffer beyond reference (ATR x)", minval = 0.0, step = 0.05, group = grpR)
-minRR   = input.float(3.0, "Minimum R:R to take the trade", minval = 0.5, step = 0.25, group = grpR, tooltip = "Setups whose calculated R:R is below this are skipped. Default 3.0 = only 1:3+ trades.")
-tp2Mode = input.string("Liquidity target", "TP2 (final) mode", options = ["Liquidity target", "Fixed R:R"], group = grpR, tooltip = "Liquidity = aim for the opposing liquidity pool (gives a real, variable R:R that the min-R:R filter screens). Fixed = TP2 at a set R:R multiple.")
+useMinRR = input.bool(true, "Filter out setups below a minimum R:R", group = grpR)
+minRR   = input.float(2.0, "Minimum R:R", minval = 0.5, step = 0.25, group = grpR, tooltip = "Setups whose calculated R:R is below this are skipped (when the filter is on).")
+tp2Mode = input.string("Liquidity target", "TP2 (final) mode", options = ["Liquidity target", "Fixed R:R"], group = grpR)
 targetRR  = input.float(3.0, "TP2 fixed R:R (Fixed mode)", minval = 0.5, step = 0.25, group = grpR)
-targetLook= input.int(30, "Opposing-liquidity lookback (Liquidity mode)", minval = 2, group = grpR)
-tp1RR     = input.float(1.0, "TP1 R:R (first partial)", minval = 0.25, step = 0.25, group = grpR, tooltip = "Where part of the position is banked. SL moves to break-even once this is hit.")
+targetLook= input.int(40, "Opposing-liquidity lookback (Liquidity mode)", minval = 2, group = grpR)
+tp1RR     = input.float(1.0, "TP1 R:R (first partial)", minval = 0.25, step = 0.25, group = grpR)
 moveBE    = input.bool(true, "Move stop to break-even after TP1", group = grpR)
 
-grpF = "Filters (optional)"
-useChop  = input.bool(true, "Avoid chop/range (ADX filter)", group = grpF, tooltip = "ON = only trade when ADX shows the market is actually moving, not ranging.")
-adxLen   = input.int(14, "ADX length", minval = 1, group = grpF)
-adxSmooth= input.int(14, "ADX smoothing", minval = 1, group = grpF)
-adxMin   = input.float(20, "Minimum ADX", minval = 0, step = 1, group = grpF)
-useTrend = input.bool(true, "HTF trend filter (only with the bias)", group = grpF)
-htfRes     = input.timeframe("60", "Trend timeframe", group = grpF, tooltip = "60 = 1H.")
+grpG = "Grading confluences"
+rrPremium  = input.float(3.0, "R:R premium for A++ confluence", minval = 0.5, step = 0.25, group = grpG, tooltip = "A setup with R:R >= this counts as a confluence.")
+dispMinAtr = input.float(2.0, "Strong-displacement size (ATR x)", minval = 0.1, step = 0.1, group = grpG, tooltip = "Recovery >= this counts as the strong-displacement confluence (should be bigger than the V-shape minimum).")
+gradeUpp   = input.int(4, "Confluences for A++", minval = 1, maxval = 5, group = grpG)
+gradeMid   = input.int(2, "Confluences for A+",  minval = 1, maxval = 5, group = grpG)
+
+grpF = "Confluence filters (optional hard-require)"
+reqTrend = input.bool(false, "REQUIRE HTF trend alignment", group = grpF, tooltip = "OFF = trend is only a grading confluence. ON = skip setups against the 1H trend.")
+htfRes     = input.timeframe("60", "Trend timeframe", group = grpF)
 emaFastLen = input.int(50,  "Fast EMA", minval = 1, group = grpF)
 emaSlowLen = input.int(100, "Slow EMA", minval = 1, group = grpF)
-useSess  = input.bool(false, "Only trade London / NY killzones", group = grpF)
+reqSess  = input.bool(false, "REQUIRE London/NY killzone", group = grpF)
 londonSess = input.session("0200-0500", "London killzone", group = grpF)
 nySess     = input.session("0700-1000", "New York killzone", group = grpF)
 sessTz     = input.string("America/New_York", "Session timezone", group = grpF)
-
-grpM = "Trade management"
-oneAtATime = input.bool(true, "One trade on the chart at a time", group = grpM, tooltip = "ON = ignore new setups until the current trade resolves (cleanest). OFF = newest setup replaces the drawing.")
+reqChop  = input.bool(false, "REQUIRE no-chop (ADX)", group = grpF)
+adxLen   = input.int(14, "ADX length", minval = 1, group = grpF)
+adxSmooth= input.int(14, "ADX smoothing", minval = 1, group = grpF)
+adxMin   = input.float(20, "Minimum ADX (not choppy)", minval = 0, step = 1, group = grpF)
 
 grpP = "Position size"
 acct     = input.float(50000, "Account ($)", minval = 0, group = grpP)
 riskPct  = input.float(1.0, "Risk per trade (%)", minval = 0.1, step = 0.1, group = grpP)
 pointVal = input.float(2.0, "$ per point (MNQ=2, NQ=20, MES=5, ES=50)", minval = 0.01, group = grpP)
 
-grpV = "Show"
-showDot   = input.bool(true, "Red dot on entry candle", group = grpV)
-showLines = input.bool(true, "Draw Entry/Stop/TP1/TP2 lines", group = grpV)
-showZone  = input.bool(true, "Draw the IFVG zone", group = grpV)
-showPanel = input.bool(true, "Show info panel", group = grpV)
+grpS = "Show"
+showDot   = input.bool(true, "Signal dot (green=buy, red=sell)", group = grpS)
+showGrade = input.bool(true, "Grade label (A / A+ / A++)", group = grpS)
+showLines = input.bool(true, "Entry/Stop/BE/TP1/TP2 lines (latest signal)", group = grpS)
+showZone  = input.bool(true, "Draw the IFVG zone", group = grpS)
+showPanel = input.bool(true, "Info panel", group = grpS)
 
 // ========================= core series =========================
 atr    = ta.atr(atrLen)
 newDay = timeframe.change("D")
 
-// chop filter
 [diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxSmooth)
-trendingOk = not useChop or adxVal >= adxMin
+notChop = adxVal >= adxMin
 
-// HTF trend stack
 emaFast = request.security(syminfo.tickerid, htfRes, ta.ema(close, emaFastLen), barmerge.gaps_off, barmerge.lookahead_off)
 emaSlow = request.security(syminfo.tickerid, htfRes, ta.ema(close, emaSlowLen), barmerge.gaps_off, barmerge.lookahead_off)
 strongUp = close > emaFast and emaFast > emaSlow and emaFast > emaFast[10]
 strongDn = close < emaFast and emaFast < emaSlow and emaFast < emaFast[10]
-trendOkL = not useTrend or strongUp
-trendOkS = not useTrend or strongDn
 
-// sessions
 inLondon = not na(time(timeframe.period, londonSess, sessTz))
 inNY     = not na(time(timeframe.period, nySess, sessTz))
-inSess   = not useSess or inLondon or inNY
+inKZ     = inLondon or inNY
 
 // liquidity sweep: wick beyond the prior N-bar extreme, close back inside
 prevLL = ta.lowest(low, swingLook)[1]
 prevHH = ta.highest(high, swingLook)[1]
-sweptLo = not na(prevLL) and low  < prevLL and close > prevLL   // sell-side sweep -> bullish context
-sweptHi = not na(prevHH) and high > prevHH and close < prevHH   // buy-side sweep  -> bearish context
+sweptLo = not na(prevLL) and low  < prevLL and close > prevLL   // sell-side sweep -> long context
+sweptHi = not na(prevHH) and high > prevHH and close < prevHH   // buy-side sweep  -> short context
 var int   lastSweepLoBar = -100000
 var float lastSweepLoPx  = na
 var int   lastSweepHiBar = -100000
@@ -114,22 +117,23 @@ var float bullBot = na
 var float ibTop = na            // active bullish IFVG (support)
 var float ibBot = na
 var int   ibBorn = na
-var bool  ibTagged = false
 var float ibSweepPx = na
+var bool  ibVShape = false      // V-recovery confirmed for this zone
+var bool  ibDisp = false        // strong displacement confluence
 var float isTop = na            // active bearish IFVG (resistance)
 var float isBot = na
 var int   isBorn = na
-var bool  isTagged = false
 var float isSweepPx = na
+var bool  isVShape = false
+var bool  isDisp = false
 
-// active trade
+// active trade (for the level-line drawing)
 var bool  inTrade = false
 var int   tdir = 0
 var float tEntry = na
 var float tStop = na
 var float tTP1 = na
 var float tTP2 = na
-var float tRR = na
 var bool  tp1done = false
 var line  lnE = na
 var line  lnS = na
@@ -139,12 +143,11 @@ var label lblE = na
 var label lblS = na
 var label lblT1 = na
 var label lblT2 = na
-var label dotE = na
 var box   zBox = na
 
 // panel state
-var float lastRR = na
 var string lastTxt = "-"
+var string lastGrade = "-"
 
 // exit-event flags (this bar)
 be_now = false
@@ -158,12 +161,10 @@ if resetDay and newDay
     bullBot := na
     ibTop := na
     ibBot := na
-    ibTagged := false
     isTop := na
     isBot := na
-    isTagged := false
 
-// -- A) manage the open trade (exits / BE / extend) --
+// ---- A) manage the open trade (exits / BE / extend the level lines) ----
 if inTrade
     if showLines
         line.set_x2(lnE, bar_index)
@@ -211,42 +212,49 @@ if inTrade
             inTrade := false
             tp2_now := true
 
-canHunt = not inTrade or not oneAtATime
-
-// -- B) inversion: a raw FVG that price closes through flips to an IFVG --
-if canHunt
-    if not na(bearTop) and close > bearTop
-        ibTop := bearTop
-        ibBot := bearBot
-        ibBorn := bar_index
-        ibTagged := false
-        ibSweepPx := lastSweepLoPx
-        bearTop := na
-        bearBot := na
-        if showZone
-            zBox := box.new(bar_index, ibTop, bar_index + zoneLife, ibBot, border_color = color.new(color.teal, 50), bgcolor = color.new(color.teal, 90))
-    if not na(bullBot) and close < bullBot
-        isTop := bullTop
-        isBot := bullBot
-        isBorn := bar_index
-        isTagged := false
-        isSweepPx := lastSweepHiPx
-        bullTop := na
-        bullBot := na
-        if showZone
-            zBox := box.new(bar_index, isTop, bar_index + zoneLife, isBot, border_color = color.new(color.maroon, 50), bgcolor = color.new(color.maroon, 90))
+// ---- B) inversion: a raw FVG that price closes through flips to an IFVG ----
+//        capture the V-shape / displacement at the moment the recovery completes.
+if not na(bearTop) and close > bearTop
+    rec = close - lastSweepLoPx
+    ibTop := bearTop
+    ibBot := bearBot
+    ibBorn := bar_index
+    ibSweepPx := lastSweepLoPx
+    ibVShape := not na(lastSweepLoPx) and (bar_index - lastSweepLoBar) <= vWin and rec >= vMinAtr * atr
+    ibDisp := not na(lastSweepLoPx) and rec >= dispMinAtr * atr
+    bearTop := na
+    bearBot := na
+    if showZone and ibVShape
+        zBox := box.new(bar_index, ibTop, bar_index + zoneLife, ibBot, border_color = color.new(color.teal, 50), bgcolor = color.new(color.teal, 90))
+if not na(bullBot) and close < bullBot
+    rec = bullTop - close
+    isTop := bullTop
+    isBot := bullBot
+    isBorn := bar_index
+    isSweepPx := lastSweepHiPx
+    isVShape := not na(lastSweepHiPx) and (bar_index - lastSweepHiBar) <= vWin and rec >= vMinAtr * atr
+    isDisp := not na(lastSweepHiPx) and rec >= dispMinAtr * atr
+    bullTop := na
+    bullBot := na
+    if showZone and isVShape
+        zBox := box.new(bar_index, isTop, bar_index + zoneLife, isBot, border_color = color.new(color.maroon, 50), bgcolor = color.new(color.maroon, 90))
 
 // expire / invalidate zones
 if not na(ibBorn) and (bar_index - ibBorn > zoneLife or close < ibBot)
     ibTop := na
     ibBot := na
-    ibTagged := false
 if not na(isBorn) and (bar_index - isBorn > zoneLife or close > isTop)
     isTop := na
     isBot := na
-    isTagged := false
 
-// -- C) respect + confirmation -> evaluate R:R -> fire --
+// ========================= position size =========================
+f_qty(entry, stop) =>
+    rp = math.abs(entry - stop)
+    rp > 0 and pointVal > 0 ? math.floor((acct * riskPct / 100.0) / (rp * pointVal)) : na
+
+f_chk(b) => b ? "[x] " : "[  ] "
+
+// ---- C) entry trigger -> confluences -> grade -> fire ----
 longFire = false
 shortFire = false
 var float fE = na
@@ -254,60 +262,85 @@ var float fS = na
 var float fT1 = na
 var float fT2 = na
 var float fRR = na
+var int   fDir = 0
+var string fGrade = "A"
+var string fTip = ""
 
-if canHunt and atr > 0
-    // LONG: enter AT the bullish IFVG zone edge on a respected retrace.
-    //   entry = zone top (the edge price reaches coming from above), stop = below the zone.
-    if not na(ibTop)
-        touched   = low <= ibTop                                   // price retraced into the zone
-        respected = not reqRespect or (close > ibBot and close > open)  // held the zone + bullish reaction
-        swFresh   = bar_index - lastSweepLoBar <= sweepWin
-        if touched and respected and swFresh and trendOkL and inSess and trendingOk
-            e = ibTop
-            ref = stopMode == "Sweep extreme" and not na(ibSweepPx) ? math.min(ibBot, ibSweepPx) : ibBot
-            s = ref - stopBuf * atr
-            risk = e - s
-            if risk > 0
-                liq = ta.highest(high, targetLook)
-                t2 = tp2Mode == "Liquidity target" ? liq : e + targetRR * risk
-                rrv = (t2 - e) / risk
-                if t2 > e and rrv >= minRR
-                    longFire := true
-                    fE := e
-                    fS := s
-                    fT1 := e + tp1RR * risk
-                    fT2 := t2
-                    fRR := rrv
-                    ibTop := na
-                    ibBot := na
-                    ibTagged := false
-    // SHORT: enter AT the bearish IFVG zone edge on a respected retrace.
-    //   entry = zone bottom (the edge price reaches coming from below), stop = above the zone.
-    if not na(isBot) and not longFire
-        touched   = high >= isBot
-        respected = not reqRespect or (close < isTop and close < open)
-        swFresh   = bar_index - lastSweepHiBar <= sweepWin
-        if touched and respected and swFresh and trendOkS and inSess and trendingOk
-            e = isBot
-            ref = stopMode == "Sweep extreme" and not na(isSweepPx) ? math.max(isTop, isSweepPx) : isTop
-            s = ref + stopBuf * atr
-            risk = s - e
-            if risk > 0
-                liq = ta.lowest(low, targetLook)
-                t2 = tp2Mode == "Liquidity target" ? liq : e - targetRR * risk
-                rrv = (e - t2) / risk
-                if t2 < e and rrv >= minRR
-                    shortFire := true
-                    fE := e
-                    fS := s
-                    fT1 := e - tp1RR * risk
-                    fT2 := t2
-                    fRR := rrv
-                    isTop := na
-                    isBot := na
-                    isTagged := false
+// LONG: enter at the bullish IFVG zone top on a respected retrace
+if not na(ibTop) and ibVShape and atr > 0
+    touched   = low <= ibTop
+    respected = not reqRespect or (close > ibBot and close > open)
+    swFresh   = bar_index - lastSweepLoBar <= sweepWin
+    coreOk    = touched and respected and swFresh
+    passReq   = (not reqTrend or strongUp) and (not reqSess or inKZ) and (not reqChop or notChop)
+    if coreOk and passReq
+        e = ibTop
+        ref = stopMode == "Sweep extreme" and not na(ibSweepPx) ? math.min(ibBot, ibSweepPx) : ibBot
+        s = ref - stopBuf * atr
+        risk = e - s
+        if risk > 0
+            liq = ta.highest(high, targetLook)
+            t2 = tp2Mode == "Liquidity target" ? liq : e + targetRR * risk
+            rrv = (t2 - e) / risk
+            if t2 > e and (not useMinRR or rrv >= minRR)
+                cTrend = strongUp
+                cSess = inKZ
+                cChop = notChop
+                cDisp = ibDisp
+                cRR = rrv >= rrPremium
+                n = (cTrend ? 1 : 0) + (cSess ? 1 : 0) + (cChop ? 1 : 0) + (cDisp ? 1 : 0) + (cRR ? 1 : 0)
+                grade = n >= gradeUpp ? "A++" : n >= gradeMid ? "A+" : "A"
+                q = f_qty(e, s)
+                longFire := true
+                fDir := 1
+                fE := e
+                fS := s
+                fT1 := e + tp1RR * risk
+                fT2 := t2
+                fRR := rrv
+                fGrade := grade
+                fTip := "GRADE " + grade + "  (BUY)\n" + f_chk(true) + "Liquidity sweep (sell-side)\n" + f_chk(true) + "V-shape recovery\n" + f_chk(true) + "Inversion FVG respected\n" + f_chk(cTrend) + "HTF trend aligned\n" + f_chk(cSess) + "Killzone session\n" + f_chk(cChop) + "No chop (ADX)\n" + f_chk(cDisp) + "Strong displacement\n" + f_chk(cRR) + "R:R >= " + str.tostring(rrPremium, "#.##") + "\n----\nEntry " + str.tostring(e, format.mintick) + "\nStop  " + str.tostring(s, format.mintick) + "\nBE    " + str.tostring(e, format.mintick) + "\nTP1   " + str.tostring(fT1, format.mintick) + "\nTP2   " + str.tostring(t2, format.mintick) + "\nR:R   " + str.tostring(rrv, "#.##") + "   Size ~" + str.tostring(na(q) ? 0 : q) + "c"
+                ibTop := na
+                ibBot := na
 
-// -- D) update raw FVG zones from THIS bar (done last so inversion uses prior zone) --
+// SHORT: enter at the bearish IFVG zone bottom on a respected retrace
+if not na(isBot) and isVShape and atr > 0 and not longFire
+    touched   = high >= isBot
+    respected = not reqRespect or (close < isTop and close < open)
+    swFresh   = bar_index - lastSweepHiBar <= sweepWin
+    coreOk    = touched and respected and swFresh
+    passReq   = (not reqTrend or strongDn) and (not reqSess or inKZ) and (not reqChop or notChop)
+    if coreOk and passReq
+        e = isBot
+        ref = stopMode == "Sweep extreme" and not na(isSweepPx) ? math.max(isTop, isSweepPx) : isTop
+        s = ref + stopBuf * atr
+        risk = s - e
+        if risk > 0
+            liq = ta.lowest(low, targetLook)
+            t2 = tp2Mode == "Liquidity target" ? liq : e - targetRR * risk
+            rrv = (e - t2) / risk
+            if t2 < e and (not useMinRR or rrv >= minRR)
+                cTrend = strongDn
+                cSess = inKZ
+                cChop = notChop
+                cDisp = isDisp
+                cRR = rrv >= rrPremium
+                n = (cTrend ? 1 : 0) + (cSess ? 1 : 0) + (cChop ? 1 : 0) + (cDisp ? 1 : 0) + (cRR ? 1 : 0)
+                grade = n >= gradeUpp ? "A++" : n >= gradeMid ? "A+" : "A"
+                q = f_qty(e, s)
+                shortFire := true
+                fDir := -1
+                fE := e
+                fS := s
+                fT1 := e - tp1RR * risk
+                fT2 := t2
+                fRR := rrv
+                fGrade := grade
+                fTip := "GRADE " + grade + "  (SELL)\n" + f_chk(true) + "Liquidity sweep (buy-side)\n" + f_chk(true) + "V-shape recovery\n" + f_chk(true) + "Inversion FVG respected\n" + f_chk(cTrend) + "HTF trend aligned\n" + f_chk(cSess) + "Killzone session\n" + f_chk(cChop) + "No chop (ADX)\n" + f_chk(cDisp) + "Strong displacement\n" + f_chk(cRR) + "R:R >= " + str.tostring(rrPremium, "#.##") + "\n----\nEntry " + str.tostring(e, format.mintick) + "\nStop  " + str.tostring(s, format.mintick) + "\nBE    " + str.tostring(e, format.mintick) + "\nTP1   " + str.tostring(fT1, format.mintick) + "\nTP2   " + str.tostring(t2, format.mintick) + "\nR:R   " + str.tostring(rrv, "#.##") + "   Size ~" + str.tostring(na(q) ? 0 : q) + "c"
+                isTop := na
+                isBot := na
+
+// ---- D) update raw FVG zones from THIS bar (done last so inversion uses prior zone) ----
 if bar_index >= 2
     if high < low[2]
         bearTop := low[2]
@@ -316,49 +349,46 @@ if bar_index >= 2
         bullTop := low
         bullBot := high[2]
 
-// ========================= position size =========================
-f_qty(entry, stop) =>
-    rp = math.abs(entry - stop)
-    rp > 0 and pointVal > 0 ? math.floor((acct * riskPct / 100.0) / (rp * pointVal)) : na
-
-// ========================= open the trade drawing =========================
+// ========================= draw the signal =========================
 if longFire or shortFire
-    // clear any previous drawing
-    if not na(lnE)
-        line.delete(lnE)
-        line.delete(lnS)
-        line.delete(lnT1)
-        line.delete(lnT2)
-    if not na(lblE)
-        label.delete(lblE)
-        label.delete(lblS)
-        label.delete(lblT1)
-        label.delete(lblT2)
-    if not na(dotE)
-        label.delete(dotE)
+    dotCol = fDir == 1 ? color.green : color.red
+    gradeCol = fGrade == "A++" ? color.yellow : (fGrade == "A+" ? color.aqua : color.gray)
+    // persistent dot (with hover checklist) + grade label - NOT deleted, builds history
+    if showDot
+        label.new(bar_index, fE, "", style = label.style_circle, color = dotCol, size = size.tiny, yloc = yloc.price, tooltip = fTip)
+    if showGrade
+        label.new(bar_index, fE, fGrade, style = fDir == 1 ? label.style_label_up : label.style_label_down, color = color.new(color.black, 100), textcolor = gradeCol, size = size.small, yloc = yloc.price, tooltip = fTip)
+    // level lines for the LATEST signal only - replace the previous set
+    if showLines
+        if not na(lnE)
+            line.delete(lnE)
+            line.delete(lnS)
+            line.delete(lnT1)
+            line.delete(lnT2)
+            label.delete(lblE)
+            label.delete(lblS)
+            label.delete(lblT1)
+            label.delete(lblT2)
+        colTp = color.new(color.green, 0)
+        lnE  := line.new(bar_index, fE,  bar_index + 1, fE,  color = color.gray, width = 1)
+        lnS  := line.new(bar_index, fS,  bar_index + 1, fS,  color = color.red,  width = 1)
+        lnT1 := line.new(bar_index, fT1, bar_index + 1, fT1, color = colTp, width = 1, style = line.style_dashed)
+        lnT2 := line.new(bar_index, fT2, bar_index + 1, fT2, color = color.new(color.green, 20), width = 2)
+        lblE  := label.new(bar_index, fE,  "Entry " + str.tostring(fE, format.mintick), style = label.style_label_left, color = color.new(color.gray, 100), textcolor = color.gray, size = size.small)
+        lblS  := label.new(bar_index, fS,  "SL", style = label.style_label_left, color = color.new(color.gray, 100), textcolor = color.red, size = size.small)
+        lblT1 := label.new(bar_index, fT1, "TP1", style = label.style_label_left, color = color.new(color.gray, 100), textcolor = colTp, size = size.small)
+        lblT2 := label.new(bar_index, fT2, "TP2  R:R " + str.tostring(fRR, "#.##"), style = label.style_label_left, color = color.new(color.gray, 100), textcolor = color.green, size = size.small)
+    // trade state for BE / exit management
     inTrade := true
-    tdir := longFire ? 1 : -1
+    tdir := fDir
     tEntry := fE
     tStop := fS
     tTP1 := fT1
     tTP2 := fT2
-    tRR := fRR
     tp1done := false
-    lastRR := fRR
-    q = f_qty(fE, fS)
-    lastTxt := (longFire ? "BUY @ " : "SELL @ ") + str.tostring(fE, format.mintick) + "  R:R " + str.tostring(fRR, "#.##") + "  ~" + str.tostring(na(q) ? 0 : q) + "c"
-    if showDot
-        dotE := label.new(bar_index, fE, "", style = label.style_circle, color = longFire ? color.green : color.red, size = size.tiny, yloc = yloc.price)
-    if showLines
-        colTp = color.new(color.green, 0)
-        lnE  := line.new(bar_index, fE,  bar_index + 1, fE,  color = color.gray,  width = 1, style = line.style_solid)
-        lnS  := line.new(bar_index, fS,  bar_index + 1, fS,  color = color.red,   width = 1, style = line.style_solid)
-        lnT1 := line.new(bar_index, fT1, bar_index + 1, fT1, color = colTp,       width = 1, style = line.style_dashed)
-        lnT2 := line.new(bar_index, fT2, bar_index + 1, fT2, color = color.new(color.green, 30), width = 2, style = line.style_solid)
-        lblE  := label.new(bar_index, fE,  "Entry " + str.tostring(fE, format.mintick), style = label.style_label_left, color = color.new(color.gray, 100), textcolor = color.gray,  size = size.small)
-        lblS  := label.new(bar_index, fS,  "SL",  style = label.style_label_left, color = color.new(color.gray, 100), textcolor = color.red,   size = size.small)
-        lblT1 := label.new(bar_index, fT1, "TP1", style = label.style_label_left, color = color.new(color.gray, 100), textcolor = colTp,       size = size.small)
-        lblT2 := label.new(bar_index, fT2, "TP2  R:R " + str.tostring(fRR, "#.##"), style = label.style_label_left, color = color.new(color.gray, 100), textcolor = color.green, size = size.small)
+    lastGrade := fGrade
+    q2 = f_qty(fE, fS)
+    lastTxt := (fDir == 1 ? "BUY @ " : "SELL @ ") + str.tostring(fE, format.mintick) + "  R:R " + str.tostring(fRR, "#.##") + "  ~" + str.tostring(na(q2) ? 0 : q2) + "c"
 
 // ========================= info panel =========================
 var table pan = table.new(position.top_right, 2, 6, border_width = 1)
@@ -370,18 +400,18 @@ if showPanel and barstate.islast
     table.cell(pan, 0, 1, "HTF trend", text_size = size.small, text_color = color.gray)
     table.cell(pan, 1, 1, bias, text_size = size.small, text_color = strongUp ? color.teal : (strongDn ? color.maroon : color.gray))
     table.cell(pan, 0, 2, "ADX", text_size = size.small, text_color = color.gray)
-    table.cell(pan, 1, 2, str.tostring(adxVal, "#.#") + (trendingOk ? "" : " (chop)"), text_size = size.small, text_color = trendingOk ? color.white : color.gray)
+    table.cell(pan, 1, 2, str.tostring(adxVal, "#.#") + (notChop ? "" : " chop"), text_size = size.small, text_color = notChop ? color.white : color.gray)
     table.cell(pan, 0, 3, "Armed zone", text_size = size.small, text_color = color.gray)
     table.cell(pan, 1, 3, armed, text_size = size.small, text_color = color.white)
-    table.cell(pan, 0, 4, "Last setup", text_size = size.small, text_color = color.gray)
-    table.cell(pan, 1, 4, lastTxt, text_size = size.small, text_color = color.white)
-    table.cell(pan, 0, 5, "Min R:R", text_size = size.small, text_color = color.gray)
-    table.cell(pan, 1, 5, str.tostring(minRR, "#.##"), text_size = size.small, text_color = color.white)
+    table.cell(pan, 0, 4, "Last grade", text_size = size.small, text_color = color.gray)
+    table.cell(pan, 1, 4, lastGrade, text_size = size.small, text_color = lastGrade == "A++" ? color.yellow : (lastGrade == "A+" ? color.aqua : color.white))
+    table.cell(pan, 0, 5, "Last setup", text_size = size.small, text_color = color.gray)
+    table.cell(pan, 1, 5, lastTxt, text_size = size.small, text_color = color.white)
 
 // ========================= alerts =========================
-alertcondition(longFire,  "Sweep/IFVG BUY",  "Sweep+IFVG bullish reversal - sweep + respected IFVG, R:R OK")
-alertcondition(shortFire, "Sweep/IFVG SELL", "Sweep+IFVG bearish reversal - sweep + respected IFVG, R:R OK")
-alertcondition(longFire or shortFire, "Sweep/IFVG entry", "Sweep+IFVG entry signal")
+alertcondition(longFire,  "Sweep/IFVG BUY",  "Sweep+IFVG buy - sweep + V-recovery + respected IFVG")
+alertcondition(shortFire, "Sweep/IFVG SELL", "Sweep+IFVG sell - sweep + V-recovery + respected IFVG")
+alertcondition(longFire or shortFire, "Sweep/IFVG entry", "Sweep+IFVG graded entry signal")
 alertcondition(be_now,   "Sweep/IFVG TP1 / BE", "TP1 hit - stop moved to break-even")
 alertcondition(tp2_now,  "Sweep/IFVG TP2",      "TP2 hit - final target reached")
 alertcondition(stop_now, "Sweep/IFVG stopped",  "Stop hit")
