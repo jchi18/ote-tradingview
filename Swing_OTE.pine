@@ -35,11 +35,12 @@ colZ   = input.color(color.gray,   "Zig-zag", group = grpC)
 colOTE = input.color(color.orange, "OTE zone", group = grpC)
 
 // ========================= MTF pivots (non-repainting) =========================
-tf    = structTF == "" ? timeframe.period : structTF
-htfMs = timeframe.in_seconds(tf) * 1000
+tf = structTF == "" ? timeframe.period : structTF
 
-ph = request.security(syminfo.tickerid, tf, ta.pivothigh(pvtLen, pvtLen), lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
-pl = request.security(syminfo.tickerid, tf, ta.pivotlow(pvtLen, pvtLen),  lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
+// request the pivot value AND the actual bar time it formed on (time[pvtLen] = the pivot
+// bar, evaluated on the structure TF) so placement is gap/DST-safe with no manual offset.
+[ph, phT] = request.security(syminfo.tickerid, tf, [ta.pivothigh(pvtLen, pvtLen), time[pvtLen]], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
+[pl, plT] = request.security(syminfo.tickerid, tf, [ta.pivotlow(pvtLen, pvtLen),  time[pvtLen]], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
 
 // each confirmed pivot value repeats across the structure bar's chart bars - act on it once
 newPH = not na(ph) and (na(ph[1]) or ph != ph[1])
@@ -72,7 +73,7 @@ f_clearOTE() =>
 
 // ========================= swing HIGH =========================
 if newPH
-    pt = time - pvtLen * htfMs
+    pt = phT
     isHH = na(lastSwHigh) or ph > lastSwHigh
     lastSwType := showStruct ? (isHH ? "HH" : "LH") : "H"
     if showSwings
@@ -100,7 +101,7 @@ if newPH
 
 // ========================= swing LOW =========================
 if newPL
-    pt = time - pvtLen * htfMs
+    pt = plT
     isLL = na(lastSwLow) or pl < lastSwLow
     lastSwType := showStruct ? (isLL ? "LL" : "HL") : "L"
     if showSwings
