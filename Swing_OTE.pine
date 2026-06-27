@@ -25,6 +25,9 @@ showEq     = input.bool(true, "Show 0.5 equilibrium line", group = grpV)
 grpO = "OTE"
 fGold = input.float(0.705, "OTE sweet-spot level", options = [0.62, 0.705, 0.79], group = grpO, tooltip = "The fib drawn as the bold OTE line; the shaded zone always spans 0.62-0.79.")
 
+grpV2 = "Show"
+showInfo = input.bool(true, "Info label (TF / last swing / OTE)", group = grpV2)
+
 grpC = "Colors"
 colH   = input.color(color.red,    "Swing high", group = grpC)
 colL   = input.color(color.green,  "Swing low", group = grpC)
@@ -49,10 +52,13 @@ var float lastSwLow = na
 var int   lastSwLowT = na
 var float zPrice = na
 var int   zTime = na
-var box   oteBox = na
-var line  oteMid = na
-var line  oteEq = na
-var label oteLbl = na
+var box    oteBox = na
+var line   oteMid = na
+var line   oteEq = na
+var label  oteLbl = na
+var string lastSwType = na
+var string oteDir = na
+var table  infoTbl = na
 
 f_clearOTE() =>
     if not na(oteBox)
@@ -68,6 +74,7 @@ f_clearOTE() =>
 if newPH
     pt = time - pvtLen * htfMs
     isHH = na(lastSwHigh) or ph > lastSwHigh
+    lastSwType := showStruct ? (isHH ? "HH" : "LH") : "H"
     if showSwings
         label.new(pt, ph, showStruct ? (isHH ? "HH" : "LH") : "H", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_down, color = color.new(colH, 80), textcolor = colH, size = size.small)
     if showZig and not na(zPrice)
@@ -87,6 +94,7 @@ if newPH
             oteMid := line.new(pt, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
             oteLbl := label.new(time, gold, "OTE " + str.tostring(fGold) + " (long)", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
             oteEq := showEq ? line.new(pt, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
+            oteDir := "LONG"
     lastSwHigh := ph
     lastSwHighT := pt
 
@@ -94,6 +102,7 @@ if newPH
 if newPL
     pt = time - pvtLen * htfMs
     isLL = na(lastSwLow) or pl < lastSwLow
+    lastSwType := showStruct ? (isLL ? "LL" : "HL") : "L"
     if showSwings
         label.new(pt, pl, showStruct ? (isLL ? "LL" : "HL") : "L", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_up, color = color.new(colL, 80), textcolor = colL, size = size.small)
     if showZig and not na(zPrice)
@@ -113,6 +122,7 @@ if newPL
             oteMid := line.new(pt, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
             oteLbl := label.new(time, gold, "OTE " + str.tostring(fGold) + " (short)", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
             oteEq := showEq ? line.new(pt, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
+            oteDir := "SHORT"
     lastSwLow := pl
     lastSwLowT := pt
 
@@ -123,6 +133,20 @@ if not na(oteBox)
     label.set_x(oteLbl, time)
     if not na(oteEq)
         line.set_x2(oteEq, time)
+
+// ========================= info label =========================
+if showInfo and barstate.islast
+    if na(infoTbl)
+        infoTbl := table.new(position.bottom_right, 2, 3, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 60))
+    tfTxt = str.tostring(timeframe.in_seconds(tf) / 60) + "m"
+    swCol = na(lastSwType) ? color.gray : (str.contains(lastSwType, "H") and not str.contains(lastSwType, "HL") ? colH : colL)
+    oteCol = oteDir == "LONG" ? colL : oteDir == "SHORT" ? colH : color.gray
+    table.cell(infoTbl, 0, 0, "Structure TF", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTbl, 1, 0, tfTxt, text_color = color.white, text_size = size.small, text_halign = text.align_right)
+    table.cell(infoTbl, 0, 1, "Last swing", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTbl, 1, 1, na(lastSwType) ? "-" : lastSwType, text_color = swCol, text_size = size.small, text_halign = text.align_right)
+    table.cell(infoTbl, 0, 2, "OTE", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTbl, 1, 2, na(oteDir) ? "-" : oteDir, text_color = oteCol, text_size = size.small, text_halign = text.align_right)
 
 // ========================= alerts =========================
 alertcondition(newPH, "Swing OTE - new swing high", "New structure swing high confirmed")
