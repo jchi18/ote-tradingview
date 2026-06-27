@@ -38,7 +38,7 @@ slopeLen   = input.int(5, "VWAP slope length (bars)", minval = 1, group = grpE)
 useWindow  = input.bool(true, "Only trade during a time window", group = grpE, tooltip = "MNQ edge is strongest 09:30-11:00 ET. ON by default for MNQ.")
 winSess    = input.session("0930-1100", "Trade window", group = grpE)
 oncePerDay = input.bool(false, "Max one trade per day", group = grpE, tooltip = "OFF matches the validated backtest (re-arm allowed after a trade closes). ON = at most one trade/day.")
-onlyAplus  = input.bool(false, "Only take ★ A+ (strong trend + stretched) trades", group = grpE, tooltip = "ON = only the highest-conviction subset. Fewer trades; regime-tuned to trends.")
+onlyAplus  = input.bool(true, "Only take ★ A+ (strong trend + stretched) trades", group = grpE, tooltip = "ON (default) = only the highest-conviction subset (real NQ: PF 3.88 vs 1.46 for all dips). Fewer trades; regime-tuned to trends. Turn OFF to trade every dip.")
 stretchMin = input.float(1.0, "A+: min stretch from VWAP (ATR)", minval = 0, step = 0.1, group = grpE)
 
 grpR = "Risk / targets"
