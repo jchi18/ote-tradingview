@@ -256,14 +256,14 @@ var float fT2 = na
 var float fRR = na
 
 if canHunt and atr > 0
-    // LONG: bullish IFVG support
+    // LONG: enter AT the bullish IFVG zone edge on a respected retrace.
+    //   entry = zone top (the edge price reaches coming from above), stop = below the zone.
     if not na(ibTop)
-        if low <= ibTop
-            ibTagged := true
-        confirmed = reqRespect ? (ibTagged and close > ibTop and close > open) : (low <= ibTop)
-        swFresh = bar_index - lastSweepLoBar <= sweepWin
-        if confirmed and swFresh and trendOkL and inSess and trendingOk
-            e = close
+        touched   = low <= ibTop                                   // price retraced into the zone
+        respected = not reqRespect or (close > ibBot and close > open)  // held the zone + bullish reaction
+        swFresh   = bar_index - lastSweepLoBar <= sweepWin
+        if touched and respected and swFresh and trendOkL and inSess and trendingOk
+            e = ibTop
             ref = stopMode == "Sweep extreme" and not na(ibSweepPx) ? math.min(ibBot, ibSweepPx) : ibBot
             s = ref - stopBuf * atr
             risk = e - s
@@ -281,14 +281,14 @@ if canHunt and atr > 0
                     ibTop := na
                     ibBot := na
                     ibTagged := false
-    // SHORT: bearish IFVG resistance
+    // SHORT: enter AT the bearish IFVG zone edge on a respected retrace.
+    //   entry = zone bottom (the edge price reaches coming from below), stop = above the zone.
     if not na(isBot) and not longFire
-        if high >= isBot
-            isTagged := true
-        confirmed = reqRespect ? (isTagged and close < isBot and close < open) : (high >= isBot)
-        swFresh = bar_index - lastSweepHiBar <= sweepWin
-        if confirmed and swFresh and trendOkS and inSess and trendingOk
-            e = close
+        touched   = high >= isBot
+        respected = not reqRespect or (close < isTop and close < open)
+        swFresh   = bar_index - lastSweepHiBar <= sweepWin
+        if touched and respected and swFresh and trendOkS and inSess and trendingOk
+            e = isBot
             ref = stopMode == "Sweep extreme" and not na(isSweepPx) ? math.max(isTop, isSweepPx) : isTop
             s = ref + stopBuf * atr
             risk = s - e
@@ -348,7 +348,7 @@ if longFire or shortFire
     q = f_qty(fE, fS)
     lastTxt := (longFire ? "BUY @ " : "SELL @ ") + str.tostring(fE, format.mintick) + "  R:R " + str.tostring(fRR, "#.##") + "  ~" + str.tostring(na(q) ? 0 : q) + "c"
     if showDot
-        dotE := label.new(bar_index, fE, "", style = label.style_circle, color = color.red, size = size.tiny, yloc = yloc.price)
+        dotE := label.new(bar_index, fE, "", style = label.style_circle, color = longFire ? color.green : color.red, size = size.tiny, yloc = yloc.price)
     if showLines
         colTp = color.new(color.green, 0)
         lnE  := line.new(bar_index, fE,  bar_index + 1, fE,  color = color.gray,  width = 1, style = line.style_solid)
