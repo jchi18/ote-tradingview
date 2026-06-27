@@ -1,12 +1,15 @@
 //@version=6
-// VWAP Pullback — A+ Limit Scanner  (clean rebuild)
-// Backtest-confirmed primary strategy (BACKTEST_RESULTS.md Rounds 7–10):
-//   higher-timeframe EMA trend filter -> in an uptrend BUY the pullback to VWAP,
-//   in a downtrend SELL the pullback to VWAP. Stop 0.5xATR beyond, target RR 1.5–2.0.
-// This rebuild: clear BUY/SELL arrows (the entry signal), no bottom notes box, and a
-// VWAP that resets each trading day by default so it looks like the standard VWAP on
-// any symbol (incl. 24h crypto). Stop/target lines show only while a trade is live.
-indicator("VWAP Pullback — A+ Limit Scanner", "VWAP Pull", overlay = true,
+// VWAP Pullback — A+ Dip Scanner
+//   The edge is MEAN-REVERSION to VWAP, not chasing breakouts (momentum breakouts
+//   backtest at PF~1.0; this dip-buy backtests PF 2.5–2.8, maxDD ~5R on MNQ proxy).
+//   Logic: higher-timeframe EMA trend filter -> in an UPTREND, when price is above
+//   VWAP, you wait for a PULLBACK down to the VWAP line and BUY the bounce ("BUY DIP").
+//   In a DOWNTREND you wait for a rally up to VWAP and SELL it ("SELL RIP").
+//   The arrow prints AT the VWAP line on the pullback — so you're buying the dip, not
+//   the top. Entry = VWAP, stop 0.5xATR beyond it, target RR 2.0.
+// Clean: clear BUY DIP / SELL RIP arrows, no notes box, daily-anchored VWAP (looks
+// standard on any symbol incl. crypto). Stop/target lines show only while a trade is live.
+indicator("VWAP Pullback — A+ Dip Scanner", "VWAP Pull", overlay = true,
      max_lines_count = 50, max_labels_count = 50)
 
 // ───────────────────────── inputs ─────────────────────────
@@ -20,10 +23,11 @@ vwapReset = input.string("Each day", "VWAP resets", options = ["Each day", "Regu
 rthSess   = input.session("0930-1600", "Regular session (for RTH mode)", group = grpW)
 sessTz    = input.string("America/New_York", "Session timezone", group = grpW)
 
-grpE = "Signals"
-useWindow  = input.bool(false, "Only signal during a time window", group = grpE, tooltip = "OFF = signals allowed any time (good for crypto / 24h). ON = only inside the window below.")
-winSess    = input.session("0930-1600", "Signal window", group = grpE)
-oncePerDay = input.bool(true, "Max one signal per day", group = grpE, tooltip = "Matches the ~1 trade/session discipline.")
+grpE = "Signals (VWAP pullback / dip-buy)"
+slopeLen   = input.int(5, "VWAP slope length (bars)", minval = 1, group = grpE, tooltip = "VWAP must be rising over this many bars to allow dip-buys (falling for rip-sells) — keeps you with the intraday drift.")
+useWindow  = input.bool(false, "Only signal during a time window", group = grpE, tooltip = "OFF = signals allowed any time (good for crypto / 24h). ON = only inside the window below. The MNQ edge backtests strongest 09:30–11:00 ET — turn this on and set the window for that.")
+winSess    = input.session("0930-1100", "Signal window", group = grpE)
+oncePerDay = input.bool(true, "Max one trade per day", group = grpE, tooltip = "ON = at most one dip-buy/rip-sell per day (matches the backtest). OFF = take every pullback.")
 
 grpR = "Risk / targets"
 atrLen   = input.int(14, "ATR length", minval = 1, group = grpR)
@@ -73,19 +77,27 @@ emaSlow = request.security(syminfo.tickerid, htfRes, ta.ema(close, emaSlowLen), 
 biasBull = emaFast > emaSlow
 biasBear = emaFast < emaSlow
 
-// ───────────────────────── entry signals ─────────────────────────
-// The trade is a pullback to VWAP in the trend direction: in an uptrend, price is
-// above VWAP and dips back to touch it (your buy); mirror for downtrend.
+// ───────────────────────── entry signals (VWAP pullback / dip-buy) ─────────────────────────
+// In an UPTREND with a rising VWAP, when price has been trading ABOVE VWAP, BUY the
+// PULLBACK: the bar dips down to touch the VWAP line and closes back above it. You buy
+// the dip at fair value, not the top. SELL mirror (rally up to VWAP in a downtrend).
 inWin = useWindow ? not na(time(timeframe.period, winSess, sessTz)) : true
 var bool tradedToday = false
 if newDay
     tradedToday := false
 
-canTrade  = not oncePerDay or not tradedToday
-longRaw   = biasBull and inWin and low  <= vwap and high >= vwap and canTrade   // dipped to VWAP in uptrend
-shortRaw  = biasBear and inWin and high >= vwap and low  <= vwap and canTrade   // popped to VWAP in downtrend
-buySig    = longRaw  and not longRaw[1]  and barstate.isconfirmed
-sellSig   = shortRaw and not shortRaw[1] and barstate.isconfirmed
+slopeUp = vwap > vwap[slopeLen]
+slopeDn = vwap < vwap[slopeLen]
+// "armed" = the regime is right and we're waiting for a pullback to the line
+armedLong  = biasBull and slopeUp and close > vwap and inWin
+armedShort = biasBear and slopeDn and close < vwap and inWin
+// trigger = the bar pulled back to VWAP and closed back on the trend side
+dipToVwap  = low  <= vwap and close > vwap   // touched the line from above, held above
+ripToVwap  = high >= vwap and close < vwap   // touched the line from below, held below
+canTrade   = not oncePerDay or not tradedToday
+
+buySig    = armedLong  and dipToVwap and canTrade and barstate.isconfirmed
+sellSig   = armedShort and ripToVwap and canTrade and barstate.isconfirmed
 if buySig or sellSig
     tradedToday := true
 
@@ -98,6 +110,8 @@ var float tStop    = na
 var float tTgt     = na
 var int   tQty     = 0
 
+// Entry is the VWAP line itself (where your limit fills on the pullback), stop 0.5xATR
+// beyond it — exactly the levels the backtest used.
 riskDollars = acct * riskPct / 100.0
 if buySig
     tradeOn  := true
@@ -124,8 +138,8 @@ if tradeOn and not (buySig or sellSig)
 // ───────────────────────── plots ─────────────────────────
 plot(showVwap ? vwap : na, "VWAP", color.new(color.blue, 0), 2)
 
-plotshape(showSignals and buySig,  "BUY",  shape.labelup,   location.belowbar, color.new(color.teal, 0),  text = "BUY",  textcolor = color.white, size = size.small)
-plotshape(showSignals and sellSig, "SELL", shape.labeldown, location.abovebar, color.new(color.red, 0),   text = "SELL", textcolor = color.white, size = size.small)
+plotshape(showSignals and buySig,  "BUY DIP",  shape.labelup,   location.belowbar, color.new(color.teal, 0),  text = "BUY DIP",  textcolor = color.white, size = size.small)
+plotshape(showSignals and sellSig, "SELL RIP", shape.labeldown, location.abovebar, color.new(color.red, 0),   text = "SELL RIP", textcolor = color.white, size = size.small)
 
 // ── stop / target lines, drawn only while a trade is live ──
 // Left edge trails the current bar (stays close to "now") so it can never exceed
@@ -161,23 +175,26 @@ else
         tpLab  := na
 
 // ───────────────────────── info panel ─────────────────────────
-var table panel = table.new(position.top_right, 2, 6, border_width = 1)
+var table panel = table.new(position.top_right, 2, 7, border_width = 1)
 f_row(r, k, v, col) =>
     table.cell(panel, 0, r, k, text_color = color.gray,  text_size = size.small, text_halign = text.align_left)
     table.cell(panel, 1, r, v, text_color = col,         text_size = size.small, text_halign = text.align_right)
 if showPanel and barstate.islast
     biasTxt = biasBull ? "BULL ▲" : biasBear ? "BEAR ▼" : "flat"
     biasCol = biasBull ? color.teal : biasBear ? color.maroon : color.gray
+    setupTxt = armedLong ? "buy dip to VWAP" : armedShort ? "sell rip to VWAP" : "— wait —"
+    setupCol = armedLong ? color.teal : armedShort ? color.maroon : color.gray
     tradeTxt = tradeOn ? (tradeDir == 1 ? "LONG live" : "SHORT live") : "— none —"
     tradeCol = tradeOn ? (tradeDir == 1 ? color.teal : color.maroon) : color.gray
     f_row(0, "HTF bias", biasTxt, biasCol)
-    f_row(1, "Trade",    tradeTxt, tradeCol)
-    f_row(2, "Entry",    tradeOn ? str.tostring(tEntry, format.mintick) : "—", color.orange)
-    f_row(3, "Stop",     tradeOn ? str.tostring(tStop,  format.mintick) : "—", color.red)
-    f_row(4, "Target",   tradeOn ? str.tostring(tTgt,   format.mintick) : "—", color.green)
-    f_row(5, "Size (ct)",tradeOn ? str.tostring(tQty) : "—", color.white)
+    f_row(1, "Setup",    setupTxt, setupCol)
+    f_row(2, "Trade",    tradeTxt, tradeCol)
+    f_row(3, "Entry",    tradeOn ? str.tostring(tEntry, format.mintick) : "—", color.orange)
+    f_row(4, "Stop",     tradeOn ? str.tostring(tStop,  format.mintick) : "—", color.red)
+    f_row(5, "Target",   tradeOn ? str.tostring(tTgt,   format.mintick) : "—", color.green)
+    f_row(6, "Size (ct)",tradeOn ? str.tostring(tQty) : "—", color.white)
 
 // ───────────────────────── alerts ─────────────────────────
-alertcondition(buySig,  "BUY signal",  "VWAP Pullback BUY: uptrend pullback to VWAP. Buy, stop 0.5xATR below, target RR.")
-alertcondition(sellSig, "SELL signal", "VWAP Pullback SELL: downtrend pullback to VWAP. Sell, stop 0.5xATR above, target RR.")
-alertcondition(buySig or sellSig, "Any signal", "VWAP Pullback signal — check the chart.")
+alertcondition(buySig,  "BUY DIP signal",  "VWAP pullback BUY: uptrend, price dipped to VWAP and bounced. Entry VWAP, stop 0.5xATR below, target RR.")
+alertcondition(sellSig, "SELL RIP signal", "VWAP rally SELL: downtrend, price popped to VWAP and rejected. Entry VWAP, stop 0.5xATR above, target RR.")
+alertcondition(buySig or sellSig, "Any signal", "VWAP pullback signal — check the chart.")
