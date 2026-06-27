@@ -1,265 +1,134 @@
 //@version=6
-// Swing OTE - MTF Structure
-//   Plots confirmed swing highs/lows from a CHOSEN timeframe onto any chart, so you can
-//   execute on a low-TF chart while anchoring your OTE to higher-timeframe structure.
-//   NON-REPAINTING: a swing only prints once its pivot is CONFIRMED on the structure
-//   timeframe (pvtLen bars each side, lookahead off), placed back at the bar where it
-//   actually formed via the HTF pivot time (gap/DST-safe).
-//   BIAS-AWARE: OTE zones are only drawn in the direction of daily bias (auto from a bias
-//   timeframe trend, or a manual override). Counter-bias zones are hidden.
-//   STRUCTURE-BREAK ONLY: an OTE is drawn only when a leg BREAKS structure (a higher-high for
-//   longs, a lower-low for shorts) - the validated trade trigger - and the leg is anchored to
-//   the MAJOR point that started the move (deepest low since the last HH / highest high since
-//   the last LL), not the nearest minor pivot. Both are toggleable.
-//   CONFLUENCE-GRADED: each zone is A+ when an FVG or Order Block lands inside it during
-//   the retrace, else A (faded). RB and liquidity-sweep were backtested for THIS OTE /
-//   continuation model and did NOT improve it, so they are intentionally excluded.
-//   Optional: HH / HL / LH / LL structure labels, a zig-zag, and the 0.5 equilibrium line.
-indicator("Swing OTE - MTF Structure", "Swing OTE", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 50)
+// Swing OTE - MTF Swing Points
+//   A clean, NON-REPAINTING multi-timeframe swing-point plotter. Detect swings on a chosen
+//   structure timeframe and plot them onto any chart, so you can execute on a low-TF chart while
+//   reading higher-timeframe structure and dropping your OWN OTE fib on the impulse legs.
+//
+//   TWO TIERS:
+//     - MAJOR swings (bold)  = strong pivots -> the impulse-leg highs/lows you anchor an OTE to.
+//     - MINOR swings (faint) = weaker pivots -> internal structure / detail.
+//   Each tier is independent (strength + on/off) with HH / HL / LH / LL structure labels and a
+//   zig-zag. NON-REPAINTING: a swing prints only once its pivot is CONFIRMED on the structure TF
+//   (len bars each side, lookahead off), placed back on the exact bar it formed via the HTF pivot
+//   time (gap / DST safe).
+indicator("Swing OTE - MTF Swing Points", "Swing OTE", overlay = true, max_lines_count = 500, max_labels_count = 500)
 
-// ========================= structure inputs =========================
-structTF = input.timeframe("60", "Structure timeframe", tooltip = "Timeframe the swings are detected on. Blank = chart TF. Trade an LTF chart and set this to your HTF (15 / 60 / 240) to anchor OTE to higher structure. Keep it >= the chart TF.")
-pvtLen   = input.int(5, "Swing strength (bars each side)", minval = 1, tooltip = "Left/right bars for a confirmed pivot ON THE STRUCTURE TF. Higher = fewer, more significant swings.")
+// ========================= structure =========================
+structTF = input.timeframe("60", "Structure timeframe", tooltip = "Timeframe the swings are detected on. Blank = chart TF. Trade an LTF chart and set this to your HTF (15 / 60 / 240) to read higher structure. Keep it >= the chart TF.")
 
-grpV = "Show"
-showSwings = input.bool(true, "Swing point markers", group = grpV)
+grpM = "Major swings (impulse anchors)"
+showMajor = input.bool(true, "Show major swings", group = grpM)
+majorLen  = input.int(20, "Major swing strength", minval = 1, group = grpM, tooltip = "Left/right bars for a confirmed MAJOR pivot on the structure TF. Higher = fewer, more significant swings. These are the points you anchor an OTE leg to.")
+majZig    = input.bool(true, "Major zig-zag", group = grpM)
+
+grpN = "Minor swings (detail)"
+showMinor = input.bool(true, "Show minor swings", group = grpN)
+minorLen  = input.int(5, "Minor swing strength", minval = 1, group = grpN, tooltip = "Left/right bars for a confirmed MINOR pivot. Internal structure between the major swings. Turn off for a clean major-only view.")
+minZig    = input.bool(true, "Minor zig-zag", group = grpN)
+
+grpV = "Labels"
 showStruct = input.bool(true, "Label structure (HH / HL / LH / LL)", group = grpV, tooltip = "Off = plain H / L markers.")
-showZig    = input.bool(true, "Zig-zag connecting swings", group = grpV)
-showOTE    = input.bool(true, "Auto OTE fib of the latest impulse leg", group = grpV)
-showEq     = input.bool(true, "Show 0.5 equilibrium line", group = grpV)
-showInfo   = input.bool(true, "Info label (TF / bias / swing / OTE)", group = grpV)
-
-grpO = "OTE"
-fGold    = input.float(0.705, "OTE sweet-spot level", options = [0.62, 0.705, 0.79], group = grpO, tooltip = "The fib drawn as the bold OTE line; the shaded zone always spans 0.62-0.79.")
-bosOnly  = input.bool(true, "Only on a structure break (BOS)", group = grpO, tooltip = "ON (recommended): an OTE is drawn only when a leg BREAKS structure - a higher-high for longs, a lower-low for shorts. This is where the validated edge lives (the backtest armed only after price broke the prior swing). OFF = draw an OTE on every swing leg (noisy, includes non-trade pullbacks).")
-majorLeg = input.bool(true, "Anchor leg to the major point before the move", group = grpO, tooltip = "ON (recommended): the leg origin is the DEEPEST pullback low since the last structural high (for longs) / the HIGHEST point since the last structural low (for shorts) - i.e. the major swing that started the big move, not the nearest minor pivot. OFF = use the nearest confirmed pivot as the origin.")
-maxZones = input.int(5, "Max OTE zones kept on chart", minval = 1, group = grpO, tooltip = "How many recent OTE zones to keep. Older zones freeze in place when a new structure leg forms; only the newest is live (extends right, can upgrade to A+). Set to 1 for just the current zone.")
-
-// ========================= daily bias =========================
-grpB = "Daily bias"
-biasMode    = input.string("Auto", "Bias", options = ["Auto", "Long only", "Short only", "Both"], group = grpB, tooltip = "Auto = read the bias-timeframe trend. Long/Short only = force a direction from your own top-down read. Both = no gate. Counter-bias OTE zones are HIDDEN.")
-biasTF      = input.timeframe("D", "Bias timeframe (Auto)", group = grpB, tooltip = "Timeframe whose EMA trend defines auto bias. Daily by default; drop to 240 / 60 for an intraday bias.")
-biasFastLen = input.int(8,  "Bias EMA fast", minval = 1, group = grpB, tooltip = "Backtest note: on real NQ a ~2-4 day / multi-week daily trend gates the OTE edge as well as the validated 1H trend (PF ~1.38 either way). The old 20/50 default was a 1-2 MONTH trend - too slow. 8/21 on Daily is responsive and still smooth.")
-biasSlowLen = input.int(21, "Bias EMA slow", minval = 1, group = grpB)
-
-// ========================= confluence =========================
-grpCf = "Confluence (A+ upgrade)"
-useFVG = input.bool(true, "FVG inside the zone -> A+", group = grpCf)
-useOB  = input.bool(true, "Order block inside the zone -> A+", group = grpCf, tooltip = "Detected on the CHART timeframe inside the OTE band as price retraces. RB and liquidity-sweep were tested for this continuation model and did NOT help, so they are excluded.")
+showInfo   = input.bool(true, "Info table (TF / last swings)", group = grpV)
 
 grpC = "Colors"
-colH   = input.color(color.red,    "Swing high", group = grpC)
-colL   = input.color(color.green,  "Swing low", group = grpC)
-colZ   = input.color(color.gray,   "Zig-zag", group = grpC)
-colOTE = input.color(color.orange, "OTE zone", group = grpC)
+colH = input.color(color.red,   "Swing high", group = grpC)
+colL = input.color(color.green, "Swing low", group = grpC)
+colZ = input.color(color.gray,  "Zig-zag", group = grpC)
 
 // ========================= MTF pivots (non-repainting) =========================
 tf = structTF == "" ? timeframe.period : structTF
 
-// pivot value + the actual bar time it formed on (time[pvtLen] on the structure TF)
-[ph, phT] = request.security(syminfo.tickerid, tf, [ta.pivothigh(pvtLen, pvtLen), time[pvtLen]], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
-[pl, plT] = request.security(syminfo.tickerid, tf, [ta.pivotlow(pvtLen, pvtLen),  time[pvtLen]], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
+// MAJOR pivot value + the actual bar time it formed on (time[len] on the structure TF)
+[Mph, MphT] = request.security(syminfo.tickerid, tf, [ta.pivothigh(majorLen, majorLen), time[majorLen]], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
+[Mpl, MplT] = request.security(syminfo.tickerid, tf, [ta.pivotlow(majorLen, majorLen),  time[majorLen]], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
+// MINOR pivots
+[mph, mphT] = request.security(syminfo.tickerid, tf, [ta.pivothigh(minorLen, minorLen), time[minorLen]], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
+[mpl, mplT] = request.security(syminfo.tickerid, tf, [ta.pivotlow(minorLen, minorLen),  time[minorLen]], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
 
-// structure-TF high/low/time (closed bars only) for major leg-origin tracking
-[htfH, htfL, htfBT] = request.security(syminfo.tickerid, tf, [high, low, time], lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off)
-
-newPH = not na(ph) and (na(ph[1]) or ph != ph[1])
-newPL = not na(pl) and (na(pl[1]) or pl != pl[1])
-
-// ========================= bias =========================
-[bFast, bSlow] = request.security(syminfo.tickerid, biasTF, [ta.ema(close, biasFastLen), ta.ema(close, biasSlowLen)], lookahead = barmerge.lookahead_off)
-biasBull = not na(bFast) and not na(bSlow) and bFast > bSlow
-biasBear = not na(bFast) and not na(bSlow) and bFast < bSlow
-allowLong  = biasMode == "Both" or biasMode == "Long only"  or (biasMode == "Auto" and biasBull)
-allowShort = biasMode == "Both" or biasMode == "Short only" or (biasMode == "Auto" and biasBear)
+newMajH = not na(Mph) and (na(Mph[1]) or Mph != Mph[1])
+newMajL = not na(Mpl) and (na(Mpl[1]) or Mpl != Mpl[1])
+newMinH = not na(mph) and (na(mph[1]) or mph != mph[1])
+newMinL = not na(mpl) and (na(mpl[1]) or mpl != mpl[1])
 
 // ========================= state =========================
-var float lastSwHigh = na
-var int   lastSwHighT = na
-var float lastSwLow = na
-var int   lastSwLowT = na
-// running leg-origin extremes: lowest low since the last structural HIGH (long origin),
-// highest high since the last structural LOW (short origin)
-var float runLow  = na
-var int   runLowT = na
-var float runHigh = na
-var int   runHighT = na
-var float zPrice = na
-var int   zTime = na
-var box    oteBox = na
-var line   oteMid = na
-var line   oteEq = na
-var label  oteLbl = na
-var bool   oteLong = false
-var bool   oteAplus = false
-var string oteConf = ""
-var float  oteLo = na
-var float  oteHi = na
-var string lastSwType = na
+var float majLastH = na
+var float majLastL = na
+var float minLastH = na
+var float minLastL = na
+var float zMajP = na
+var int   zMajT = na
+var float zMinP = na
+var int   zMinT = na
+var string majLastType = na
+var string minLastType = na
+var bool   majLastHigh = false
+var bool   minLastHigh = false
 var table  infoTbl = na
-var box[]   zBoxes = array.new<box>()
-var line[]  zMids  = array.new<line>()
-var line[]  zEqs   = array.new<line>()
-var label[] zLbls  = array.new<label>()
 
-// freeze the current live zone (stop it extending) at time x, then keep at most maxZones
-f_freezeActive(x) =>
-    if not na(oteBox)
-        box.set_right(oteBox, x)
-        line.set_x2(oteMid, x)
-        label.set_x(oteLbl, x)
-        if not na(oteEq)
-            line.set_x2(oteEq, x)
+// ========================= MAJOR swings =========================
+if showMajor and newMajH
+    isHH = na(majLastH) or Mph > majLastH
+    txt = showStruct ? (isHH ? "HH" : "LH") : "H"
+    majLastType := txt
+    majLastHigh := true
+    label.new(MphT, Mph, txt, xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_down, color = color.new(colH, 35), textcolor = color.white, size = size.normal)
+    if majZig and not na(zMajP)
+        line.new(zMajT, zMajP, MphT, Mph, xloc = xloc.bar_time, color = color.new(colZ, 0), width = 2)
+    zMajP := Mph
+    zMajT := MphT
+    majLastH := Mph
 
-f_track(b, m, e, l) =>
-    array.push(zBoxes, b)
-    array.push(zMids, m)
-    array.push(zEqs, e)
-    array.push(zLbls, l)
-    if array.size(zBoxes) > maxZones
-        box.delete(array.shift(zBoxes))
-        line.delete(array.shift(zMids))
-        oe = array.shift(zEqs)
-        if not na(oe)
-            line.delete(oe)
-        label.delete(array.shift(zLbls))
+if showMajor and newMajL
+    isLL = na(majLastL) or Mpl < majLastL
+    txt = showStruct ? (isLL ? "LL" : "HL") : "L"
+    majLastType := txt
+    majLastHigh := false
+    label.new(MplT, Mpl, txt, xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_up, color = color.new(colL, 35), textcolor = color.white, size = size.normal)
+    if majZig and not na(zMajP)
+        line.new(zMajT, zMajP, MplT, Mpl, xloc = xloc.bar_time, color = color.new(colZ, 0), width = 2)
+    zMajP := Mpl
+    zMajT := MplT
+    majLastL := Mpl
 
-f_oteText(isLong, plus, conf) =>
-    "OTE " + str.tostring(fGold) + (isLong ? " (long) " : " (short) ") + (plus ? "A+ " + conf : "A")
+// ========================= MINOR swings =========================
+if showMinor and newMinH
+    isHH = na(minLastH) or mph > minLastH
+    txt = showStruct ? (isHH ? "hh" : "lh") : "h"
+    minLastType := txt
+    minLastHigh := true
+    label.new(mphT, mph, txt, xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_down, color = color.new(colH, 80), textcolor = color.new(colH, 0), size = size.tiny)
+    if minZig and not na(zMinP)
+        line.new(zMinT, zMinP, mphT, mph, xloc = xloc.bar_time, color = color.new(colZ, 45), width = 1, style = line.style_dashed)
+    zMinP := mph
+    zMinT := mphT
+    minLastH := mph
 
-// track the major leg origins: deepest low since the last HH, highest high since the last LL
-if not na(htfL) and (na(runLow) or htfL < runLow)
-    runLow := htfL
-    runLowT := htfBT
-if not na(htfH) and (na(runHigh) or htfH > runHigh)
-    runHigh := htfH
-    runHighT := htfBT
+if showMinor and newMinL
+    isLL = na(minLastL) or mpl < minLastL
+    txt = showStruct ? (isLL ? "ll" : "hl") : "l"
+    minLastType := txt
+    minLastHigh := false
+    label.new(mplT, mpl, txt, xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_up, color = color.new(colL, 80), textcolor = color.new(colL, 0), size = size.tiny)
+    if minZig and not na(zMinP)
+        line.new(zMinT, zMinP, mplT, mpl, xloc = xloc.bar_time, color = color.new(colZ, 45), width = 1, style = line.style_dashed)
+    zMinP := mpl
+    zMinT := mplT
+    minLastL := mpl
 
-// ========================= swing HIGH =========================
-if newPH
-    pt = phT
-    isHH = na(lastSwHigh) or ph > lastSwHigh
-    lastSwType := showStruct ? (isHH ? "HH" : "LH") : "H"
-    if showSwings
-        label.new(pt, ph, showStruct ? (isHH ? "HH" : "LH") : "H", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_down, color = color.new(colH, 80), textcolor = colH, size = size.small)
-    if showZig and not na(zPrice)
-        line.new(zTime, zPrice, pt, ph, xloc = xloc.bar_time, color = color.new(colZ, 20), width = 1, style = line.style_dashed)
-    zPrice := ph
-    zTime := pt
-    // LONG OTE: only on an UP leg that BREAKS structure (a higher-high = BOS), anchored to the
-    // MAJOR pullback low that started the move (deepest low since the last structural high).
-    oLow  = majorLeg ? runLow  : lastSwLow
-    oLowT = majorLeg ? runLowT : lastSwLowT
-    if showOTE and allowLong and (not bosOnly or isHH) and not na(oLow) and not na(oLowT) and oLowT < pt
-        rng = ph - oLow
-        if rng > 0
-            t62  = ph - 0.62 * rng
-            b79  = ph - 0.79 * rng
-            gold = ph - fGold * rng
-            eqp  = ph - 0.5 * rng
-            f_freezeActive(pt)
-            oteLong := true
-            oteAplus := false
-            oteConf := ""
-            oteLo := b79
-            oteHi := t62
-            oteBox := box.new(oLowT, t62, time, b79, xloc = xloc.bar_time, border_color = color.new(colOTE, 55), border_width = 1, bgcolor = color.new(colOTE, 90))
-            oteMid := line.new(oLowT, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
-            oteLbl := label.new(time, gold, f_oteText(true, false, ""), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
-            oteEq := showEq ? line.new(oLowT, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
-            f_track(oteBox, oteMid, oteEq, oteLbl)
-    // a structural high completes the up-leg: restart the low-origin tracking for the next leg
-    if isHH
-        runLow := na
-        runLowT := na
-    lastSwHigh := ph
-    lastSwHighT := pt
-
-// ========================= swing LOW =========================
-if newPL
-    pt = plT
-    isLL = na(lastSwLow) or pl < lastSwLow
-    lastSwType := showStruct ? (isLL ? "LL" : "HL") : "L"
-    if showSwings
-        label.new(pt, pl, showStruct ? (isLL ? "LL" : "HL") : "L", xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_up, color = color.new(colL, 80), textcolor = colL, size = size.small)
-    if showZig and not na(zPrice)
-        line.new(zTime, zPrice, pt, pl, xloc = xloc.bar_time, color = color.new(colZ, 20), width = 1, style = line.style_dashed)
-    zPrice := pl
-    zTime := pt
-    // SHORT OTE: only on a DOWN leg that BREAKS structure (a lower-low = BOS), anchored to the
-    // MAJOR rally high that started the move (highest high since the last structural low).
-    oHigh  = majorLeg ? runHigh  : lastSwHigh
-    oHighT = majorLeg ? runHighT : lastSwHighT
-    if showOTE and allowShort and (not bosOnly or isLL) and not na(oHigh) and not na(oHighT) and oHighT < pt
-        rng = oHigh - pl
-        if rng > 0
-            a62  = pl + 0.62 * rng
-            a79  = pl + 0.79 * rng
-            gold = pl + fGold * rng
-            eqp  = pl + 0.5 * rng
-            f_freezeActive(pt)
-            oteLong := false
-            oteAplus := false
-            oteConf := ""
-            oteLo := a62
-            oteHi := a79
-            oteBox := box.new(oHighT, a79, time, a62, xloc = xloc.bar_time, border_color = color.new(colOTE, 55), border_width = 1, bgcolor = color.new(colOTE, 90))
-            oteMid := line.new(oHighT, gold, time, gold, xloc = xloc.bar_time, color = colOTE, width = 1)
-            oteLbl := label.new(time, gold, f_oteText(false, false, ""), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(colOTE, 100), textcolor = colOTE, size = size.small)
-            oteEq := showEq ? line.new(oHighT, eqp, time, eqp, xloc = xloc.bar_time, color = color.new(color.gray, 40), width = 1, style = line.style_dotted) : na
-            f_track(oteBox, oteMid, oteEq, oteLbl)
-    // a structural low completes the down-leg: restart the high-origin tracking for the next leg
-    if isLL
-        runHigh := na
-        runHighT := na
-    lastSwLow := pl
-    lastSwLowT := pt
-
-// ========================= extend the live zone + grade it A+ on confluence =========================
-if not na(oteBox)
-    box.set_right(oteBox, time)
-    line.set_x2(oteMid, time)
-    label.set_x(oteLbl, time)
-    if not na(oteEq)
-        line.set_x2(oteEq, time)
-    // FVG / OB landing inside the band as price retraces -> upgrade A -> A+
-    if not oteAplus and (useFVG or useOB) and not na(oteLo)
-        fvgHit = false
-        obHit = false
-        if oteLong
-            fvgHit := useFVG and low > high[2] and low >= oteLo and high[2] <= oteHi
-            obHit  := useOB and open[1] > close[1] and open[1] >= oteLo and close[1] <= oteHi
-        else
-            fvgHit := useFVG and high < low[2] and low[2] >= oteLo and high <= oteHi
-            obHit  := useOB and close[1] > open[1] and close[1] >= oteLo and open[1] <= oteHi
-        if fvgHit or obHit
-            oteAplus := true
-            oteConf := fvgHit and obHit ? "FVG+OB" : fvgHit ? "FVG" : "OB"
-            box.set_bgcolor(oteBox, color.new(colOTE, 75))
-            box.set_border_color(oteBox, colOTE)
-            box.set_border_width(oteBox, 2)
-            label.set_text(oteLbl, f_oteText(oteLong, true, oteConf))
-            label.set_textcolor(oteLbl, oteLong ? colL : colH)
-
-// ========================= info label =========================
+// ========================= info table =========================
 if showInfo and barstate.islast
     if na(infoTbl)
-        infoTbl := table.new(position.bottom_right, 2, 4, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 60))
+        infoTbl := table.new(position.bottom_right, 2, 3, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 60))
     tfTxt = str.tostring(timeframe.in_seconds(tf) / 60) + "m"
-    biasTxt = biasMode == "Auto" ? (biasBull ? "BULL " : biasBear ? "BEAR " : "flat ") + (biasTF == "" ? timeframe.period : biasTF) : biasMode
-    biasCol = (allowLong and not allowShort) ? colL : (allowShort and not allowLong) ? colH : color.gray
-    swCol = na(lastSwType) ? color.gray : (str.contains(lastSwType, "H") and not str.contains(lastSwType, "HL") ? colH : colL)
-    oteTxt = na(oteLo) ? "-" : (oteLong ? "LONG " : "SHORT ") + (oteAplus ? "A+ " + oteConf : "A")
-    oteCol = na(oteLo) ? color.gray : (oteLong ? colL : colH)
+    majCol = na(majLastType) ? color.gray : (majLastHigh ? colH : colL)
+    minCol = na(minLastType) ? color.gray : (minLastHigh ? colH : colL)
     table.cell(infoTbl, 0, 0, "Structure TF", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
     table.cell(infoTbl, 1, 0, tfTxt, text_color = color.white, text_size = size.small, text_halign = text.align_right)
-    table.cell(infoTbl, 0, 1, "Bias", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(infoTbl, 1, 1, biasTxt, text_color = biasCol, text_size = size.small, text_halign = text.align_right)
-    table.cell(infoTbl, 0, 2, "Last swing", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(infoTbl, 1, 2, na(lastSwType) ? "-" : lastSwType, text_color = swCol, text_size = size.small, text_halign = text.align_right)
-    table.cell(infoTbl, 0, 3, "OTE", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(infoTbl, 1, 3, oteTxt, text_color = oteCol, text_size = size.small, text_halign = text.align_right)
+    table.cell(infoTbl, 0, 1, "Last major", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTbl, 1, 1, na(majLastType) ? "-" : majLastType, text_color = majCol, text_size = size.small, text_halign = text.align_right)
+    table.cell(infoTbl, 0, 2, "Last minor", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTbl, 1, 2, na(minLastType) ? "-" : minLastType, text_color = minCol, text_size = size.small, text_halign = text.align_right)
 
 // ========================= alerts =========================
-alertcondition(newPH, "Swing OTE - new swing high", "New structure swing high confirmed")
-alertcondition(newPL, "Swing OTE - new swing low",  "New structure swing low confirmed")
+alertcondition(newMajH, "Major swing high", "Major structure swing high confirmed")
+alertcondition(newMajL, "Major swing low", "Major structure swing low confirmed")
