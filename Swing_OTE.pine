@@ -11,7 +11,12 @@
 //   zig-zag. NON-REPAINTING: a swing prints only once its pivot is CONFIRMED on the structure TF
 //   (len bars each side, lookahead off), placed back on the exact bar it formed via the HTF pivot
 //   time (gap / DST safe).
-indicator("Swing OTE - MTF Swing Points", "Swing OTE", overlay = true, max_lines_count = 500, max_labels_count = 500)
+//
+//   CONFLUENCE HELPERS (you still draw your own OTE - these just show the conditions that
+//   tilted the edge in backtests): trend-bias background shading (trade WITH the trend),
+//   auto FVG zones extended until filled (FVG-in-OTE was the quality driver), and BOS markers
+//   (the continuation trigger). All optional.
+indicator("Swing OTE - MTF Swing Points", "Swing OTE", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 100)
 
 // ========================= structure =========================
 structTF = input.timeframe("60", "Structure timeframe", tooltip = "Timeframe the swings are detected on. Blank = chart TF. Trade an LTF chart and set this to your HTF (15 / 60 / 240) to read higher structure. Keep it >= the chart TF.")
@@ -29,6 +34,19 @@ minZig    = input.bool(true, "Minor zig-zag", group = grpN)
 grpV = "Labels"
 showStruct = input.bool(true, "Label structure (HH / HL / LH / LL)", group = grpV, tooltip = "Off = plain H / L markers.")
 showInfo   = input.bool(true, "Info table (TF / last swings)", group = grpV)
+
+grpH = "Confluence helpers"
+showTrend    = input.bool(true,  "Shade background by trend bias", group = grpH, tooltip = "Green tint = bias is bullish (only take LONG OTE), red = bearish (only SHORT). The #1 backtested filter: trade OTE WITH the trend. Counter-trend OTE lost money on real NQ.")
+showFVG      = input.bool(true,  "Mark FVG zones", group = grpH, tooltip = "Auto-marks chart-TF fair value gaps and extends them until filled. An FVG sitting inside your hand-drawn OTE was THE quality driver in testing (PF 1.36 -> 1.88).")
+fvgTrendOnly = input.bool(true,  "FVG: trend direction only", group = grpH, tooltip = "Show only bullish FVGs while bias is bullish (and vice versa) - the confluence that matters for a trend-continuation OTE. Off = show both sides.")
+maxFVG       = input.int(8, "Max FVG zones kept", minval = 1, group = grpH)
+showBOS      = input.bool(true,  "Mark structure breaks (BOS)", group = grpH, tooltip = "Flags when price breaks the most recent MAJOR swing - the continuation trigger. Draw your OTE on the leg that caused the break, then wait for the retrace.")
+bosTrendOnly = input.bool(true,  "BOS: trend direction only", group = grpH)
+
+grpB = "Trend bias (for shading / filters)"
+biasTF   = input.timeframe("D", "Trend timeframe", group = grpB, tooltip = "Timeframe whose EMA trend defines bias. Daily by default; drop to 240 / 60 for an intraday bias.")
+biasFast = input.int(8,  "Trend EMA fast", minval = 1, group = grpB, tooltip = "Validated on real NQ: a ~2-4 day daily trend gates the OTE edge as well as the 1H trend. 8/21 on Daily is responsive and smooth.")
+biasSlow = input.int(21, "Trend EMA slow", minval = 1, group = grpB)
 
 grpC = "Colors"
 colH = input.color(color.red,   "Swing high", group = grpC)
@@ -50,6 +68,11 @@ newMajL = not na(Mpl) and (na(Mpl[1]) or Mpl != Mpl[1])
 newMinH = not na(mph) and (na(mph[1]) or mph != mph[1])
 newMinL = not na(mpl) and (na(mpl[1]) or mpl != mpl[1])
 
+// ========================= trend bias =========================
+[bF, bS] = request.security(syminfo.tickerid, biasTF, [ta.ema(close, biasFast), ta.ema(close, biasSlow)], lookahead = barmerge.lookahead_off)
+trendBull = not na(bF) and not na(bS) and bF > bS
+trendBear = not na(bF) and not na(bS) and bF < bS
+
 // ========================= state =========================
 var float majLastH = na
 var float majLastL = na
@@ -64,6 +87,14 @@ var string minLastType = na
 var bool   majLastHigh = false
 var bool   minLastHigh = false
 var table  infoTbl = na
+// BOS: the most recent major levels to break, consumed once broken
+var float  bosH = na
+var float  bosL = na
+// FVG zones (parallel arrays kept in sync)
+var box[]   fvgBox  = array.new<box>()
+var float[] fvgTopA = array.new<float>()
+var float[] fvgBotA = array.new<float>()
+var bool[]  fvgBull = array.new<bool>()
 
 // ========================= MAJOR swings =========================
 if showMajor and newMajH
@@ -90,6 +121,12 @@ if showMajor and newMajL
     zMajT := MplT
     majLastL := Mpl
 
+// latest major levels to break (BOS), tracked even if major markers are hidden
+if newMajH
+    bosH := Mph
+if newMajL
+    bosL := Mpl
+
 // ========================= MINOR swings =========================
 if showMinor and newMinH
     isHH = na(minLastH) or mph > minLastH
@@ -115,20 +152,83 @@ if showMinor and newMinL
     zMinT := mplT
     minLastL := mpl
 
+// ========================= trend shading =========================
+bgcolor(showTrend ? (trendBull ? color.new(colL, 92) : trendBear ? color.new(colH, 92) : na) : na, title = "Trend bias")
+
+// ========================= FVG zones (mark + extend until filled) =========================
+if showFVG
+    // maintain existing: extend right, drop when filled (price closes through the gap)
+    iF = array.size(fvgBox) - 1
+    while iF >= 0
+        bx = array.get(fvgBox, iF)
+        isB = array.get(fvgBull, iF)
+        tv = array.get(fvgTopA, iF)
+        bv = array.get(fvgBotA, iF)
+        filled = isB ? close < bv : close > tv
+        if filled
+            box.delete(bx)
+            array.remove(fvgBox, iF)
+            array.remove(fvgBull, iF)
+            array.remove(fvgTopA, iF)
+            array.remove(fvgBotA, iF)
+        else
+            box.set_right(bx, bar_index + 2)
+        iF := iF - 1
+    bullFVG = low > high[2]
+    bearFVG = high < low[2]
+    if bullFVG and (not fvgTrendOnly or trendBull)
+        tv = low
+        bv = high[2]
+        nb = box.new(bar_index[2], tv, bar_index + 2, bv, border_color = color.new(colL, 60), bgcolor = color.new(colL, 85))
+        array.push(fvgBox, nb)
+        array.push(fvgBull, true)
+        array.push(fvgTopA, tv)
+        array.push(fvgBotA, bv)
+    if bearFVG and (not fvgTrendOnly or trendBear)
+        tv = low[2]
+        bv = high
+        nb = box.new(bar_index[2], tv, bar_index + 2, bv, border_color = color.new(colH, 60), bgcolor = color.new(colH, 85))
+        array.push(fvgBox, nb)
+        array.push(fvgBull, false)
+        array.push(fvgTopA, tv)
+        array.push(fvgBotA, bv)
+    if array.size(fvgBox) > maxFVG
+        box.delete(array.shift(fvgBox))
+        array.shift(fvgBull)
+        array.shift(fvgTopA)
+        array.shift(fvgBotA)
+
+// ========================= BOS markers (break of the latest major swing) =========================
+bullBOS = showBOS and not na(bosH) and close > bosH and (not bosTrendOnly or trendBull)
+bearBOS = showBOS and not na(bosL) and close < bosL and (not bosTrendOnly or trendBear)
+if bullBOS
+    label.new(bar_index, low, "BOS", style = label.style_label_up, color = color.new(colL, 20), textcolor = color.white, size = size.tiny)
+    bosH := na
+if bearBOS
+    label.new(bar_index, high, "BOS", style = label.style_label_down, color = color.new(colH, 20), textcolor = color.white, size = size.tiny)
+    bosL := na
+
 // ========================= info table =========================
 if showInfo and barstate.islast
     if na(infoTbl)
-        infoTbl := table.new(position.bottom_right, 2, 3, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 60))
+        infoTbl := table.new(position.bottom_right, 2, 4, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 60))
     tfTxt = str.tostring(timeframe.in_seconds(tf) / 60) + "m"
+    bTfTxt = biasTF == "" ? timeframe.period : biasTF
+    trendTxt = (trendBull ? "BULL " : trendBear ? "BEAR " : "flat ") + bTfTxt
+    trendCol = trendBull ? colL : trendBear ? colH : color.gray
     majCol = na(majLastType) ? color.gray : (majLastHigh ? colH : colL)
     minCol = na(minLastType) ? color.gray : (minLastHigh ? colH : colL)
     table.cell(infoTbl, 0, 0, "Structure TF", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
     table.cell(infoTbl, 1, 0, tfTxt, text_color = color.white, text_size = size.small, text_halign = text.align_right)
-    table.cell(infoTbl, 0, 1, "Last major", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(infoTbl, 1, 1, na(majLastType) ? "-" : majLastType, text_color = majCol, text_size = size.small, text_halign = text.align_right)
-    table.cell(infoTbl, 0, 2, "Last minor", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
-    table.cell(infoTbl, 1, 2, na(minLastType) ? "-" : minLastType, text_color = minCol, text_size = size.small, text_halign = text.align_right)
+    table.cell(infoTbl, 0, 1, "Trend", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTbl, 1, 1, trendTxt, text_color = trendCol, text_size = size.small, text_halign = text.align_right)
+    table.cell(infoTbl, 0, 2, "Last major", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTbl, 1, 2, na(majLastType) ? "-" : majLastType, text_color = majCol, text_size = size.small, text_halign = text.align_right)
+    table.cell(infoTbl, 0, 3, "Last minor", text_color = color.gray, text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTbl, 1, 3, na(minLastType) ? "-" : minLastType, text_color = minCol, text_size = size.small, text_halign = text.align_right)
 
 // ========================= alerts =========================
 alertcondition(newMajH, "Major swing high", "Major structure swing high confirmed")
 alertcondition(newMajL, "Major swing low", "Major structure swing low confirmed")
+alertcondition(bullBOS, "Bullish BOS", "Price broke the latest major swing high (bullish structure break)")
+alertcondition(bearBOS, "Bearish BOS", "Price broke the latest major swing low (bearish structure break)")
